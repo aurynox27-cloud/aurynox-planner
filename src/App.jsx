@@ -398,7 +398,7 @@ export default function AurynoxNightPlanner() {
 useEffect(() => {
   if (apiKey) localStorage.setItem("aurynox_owm_key", apiKey);
 }, [apiKey]);;
-  const const [zip, setZip] = useState("07450");
+  const [zip, setZip] = useState("07450");
   const [fetchStatus, setFetchStatus] = useState(""); // "", "loading", "error: ...", "ok: ..."
 
   const handleFetchLive = async () => {
