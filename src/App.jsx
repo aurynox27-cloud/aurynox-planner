@@ -325,12 +325,12 @@ export default function AurynoxNightPlanner() {
   const [cSolar, setCSolar] = useState(0.5575);
   const [peakHour, setPeakHour] = useState(13.0);
   const [bumpWidth, setBumpWidth] = useState(4.5);
-  const [ceiling, setCeiling] = useState(80);
+  const [ceiling, setCeiling] = useState(78);
   const [peakStart, setPeakStart] = useState(16);
   const [peakEnd, setPeakEnd] = useState(21);
   const [precoolLead, setPrecoolLead] = useState(3);
   const [maxAcRate, setMaxAcRate] = useState(1.5);
-  const [dewMax, setDewMax] = useState(65);
+  const [dewMax, setDewMax] = useState(63);
   const [precipMax, setPrecipMax] = useState(40);
   const [rate, setRate] = useState(0.281);
 
@@ -646,29 +646,36 @@ export default function AurynoxNightPlanner() {
 
         {!simpleMode && (
           <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
-            <div className="uppercase text-xs mb-3" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>Model inputs</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Num label="Indoor now °F" value={indoorStart} onChange={setIndoorStart} step={0.5} />
-              <Num label="Start hour" value={startHour} onChange={setStartHour} />
-              <Num label="a — open" value={aOpen} onChange={setAOpen} step={0.01} />
-              <Num label="a — closed" value={aClosed} onChange={setAClosed} step={0.01} />
-              <Num label="Dew max °F" value={dewMax} onChange={setDewMax} />
-              <Num label="Precip max %" value={precipMax} onChange={setPrecipMax} />
-              <Num label="Rate $/kWh" value={rate} onChange={setRate} step={0.001} />
-              <Num label="Solar coef c" value={cSolar} onChange={setCSolar} step={0.01} />
-              <Num label="Solar peak hr" value={peakHour} onChange={setPeakHour} step={0.5} />
-              <Num label="Solar width hr" value={bumpWidth} onChange={setBumpWidth} step={0.5} />
-              <Num label="Comfort ceiling °F" value={ceiling} onChange={setCeiling} step={1} />
-              <Num label="Peak start hr" value={peakStart} onChange={setPeakStart} />
-              <Num label="Peak end hr" value={peakEnd} onChange={setPeakEnd} />
-              <Num label="Precool lead hrs" value={precoolLead} onChange={setPrecoolLead} />
-              <Num label="AC rate @75-80°F" value={maxAcRate} onChange={setMaxAcRate} step={0.1} />
-            </div>
+          <div className="uppercase text-xs mb-3" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
+            {simpleMode ? "Settings" : "Model inputs"}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Num label="Indoor now °F" value={indoorStart} onChange={setIndoorStart} step={0.5} />
+            <Num label="Dew max °F" value={dewMax} onChange={setDewMax} />
+            <Num label="Rate $/kWh" value={rate} onChange={setRate} step={0.001} />
+            <Num label="Comfort ceiling °F" value={ceiling} onChange={setCeiling} step={1} />
+            {!simpleMode && (
+              <>
+                <Num label="Start hour" value={startHour} onChange={setStartHour} />
+                <Num label="a — open" value={aOpen} onChange={setAOpen} step={0.01} />
+                <Num label="a — closed" value={aClosed} onChange={setAClosed} step={0.01} />
+                <Num label="Precip max %" value={precipMax} onChange={setPrecipMax} />
+                <Num label="Solar coef c" value={cSolar} onChange={setCSolar} step={0.01} />
+                <Num label="Solar peak hr" value={peakHour} onChange={setPeakHour} step={0.5} />
+                <Num label="Solar width hr" value={bumpWidth} onChange={setBumpWidth} step={0.5} />
+                <Num label="Peak start hr" value={peakStart} onChange={setPeakStart} />
+                <Num label="Peak end hr" value={peakEnd} onChange={setPeakEnd} />
+                <Num label="Precool lead hrs" value={precoolLead} onChange={setPrecoolLead} />
+                <Num label="AC rate @75-80°F" value={maxAcRate} onChange={setMaxAcRate} step={0.1} />
+              </>
+            )}
+          </div>
+          {!simpleMode && (
             <div className="text-xs leading-relaxed mt-2" style={{ color: PALETTE.dim }}>
               AC engages only when coasting would exceed the comfort ceiling. Pre-cool rate scales with outdoor temperature — the number above is the baseline at 75-80°F; hotter hours automatically get a reduced, more realistic rate.
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className="mt-4 text-xs" style={{ color: PALETTE.dim }}>
           Model only — sanity-check against the sky before opening. Rain reaching windows overrides any recommendation here.
