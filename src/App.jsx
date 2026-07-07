@@ -388,7 +388,7 @@ export default function AurynoxNightPlanner() {
   const [cSolar, setCSolar] = useState(0.5575);
   const [peakHour, setPeakHour] = useState(13.0);
   const [bumpWidth, setBumpWidth] = useState(4.5);
-  const [ceiling, setCeiling] = useState(80);
+  const [ceiling, setCeiling] = useState(76);
   const [peakStart, setPeakStart] = useState(16);
   const [peakEnd, setPeakEnd] = useState(21);
   const [precoolLead, setPrecoolLead] = useState(3);
@@ -412,7 +412,7 @@ useEffect(() => {
       setFetchStatus(`error: ${e.message}`);
     }
   };
-  const [dewMax, setDewMax] = useState(65);
+  const [dewMax, setDewMax] = useState(63);
   const [precipMax, setPrecipMax] = useState(40);
   const [rate, setRate] = useState(0.281);
   const [actualsText, setActualsText] = useState("");
