@@ -217,7 +217,7 @@ function simulate(rows, params) {
     if (active && mode[idx] === "sealed" && elig[idx] && r.outdoor >= temp[idx]) {
       reasons.push(`outside (${r.outdoor}°) not cooler than inside (${temp[idx].toFixed(0)}°)`);
     }
-    if (active && mode[idx] === "ac") reasons.push(`would exceed ${ceiling}° comfort ceiling — AC engaged`);
+    if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${temp[idx].toFixed(0)}°F — pre-cooling ahead of peak (${peakStart}:00–${peakEnd}:00)`);
     if (active && mode[idx] === "ac-precool") reasons.push(`pre-cooling ahead of peak window (${peakStart}:00–${peakEnd}:00)`);
     return {
       label: r.label, hour: r.hour, outdoor: r.outdoor, dew: r.dew, precip: r.precip,
@@ -628,10 +628,10 @@ export default function AurynoxNightPlanner() {
           )}
         </div>
 
-        <div className="mb-6">
-          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-            Or paste an hourly forecast manually
-          </div>
+        <details open={!simpleMode} className="mb-6">
+          <summary className="uppercase text-xs mb-2 cursor-pointer" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
+            {simpleMode ? "Trouble fetching? Paste a forecast manually ▸" : "Or paste an hourly forecast manually"}
+          </summary>
           <textarea
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
@@ -642,7 +642,7 @@ export default function AurynoxNightPlanner() {
           <div className="text-xs mt-1" style={{ color: PALETTE.dim }}>
             Parsed {rows.length} hours.
           </div>
-        </div>
+        </details>
 
         <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
           <div className="uppercase text-xs mb-3" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
