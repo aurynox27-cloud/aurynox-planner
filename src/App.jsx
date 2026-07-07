@@ -343,7 +343,14 @@ function dewPointF(tempF, rh) {
 
 // Fetch OpenWeather's free 5-day/3-hour forecast and turn it into the same paste-format text the
 // manual box accepts — reuses parseForecast() as-is rather than duplicating row-building logic.
-async function fetchOpenWeatherText(apiKey, lat, lon) {
+async function fetchOpenWeatherText(apiKey, zip) {
+  // Convert zip -> lat/lon first (OpenWeather's Geocoding API), then fetch the forecast.
+  const geoUrl = `https://api.openweathermap.org/geo/1.0/zip?zip=${encodeURIComponent(zip)},US&appid=${apiKey}`;
+  const geoRes = await fetch(geoUrl);
+  if (!geoRes.ok) throw new Error(`Couldn't look up zip code "${zip}" (status ${geoRes.status}) — check it's a valid 5-digit US zip and your key is active.`);
+  const geo = await geoRes.json();
+  const { lat, lon } = geo;
+
   const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=imperial&appid=${apiKey}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`OpenWeather returned ${res.status} — check your API key and that it's activated (can take ~10 min after signup).`);
@@ -391,15 +398,14 @@ export default function AurynoxNightPlanner() {
 useEffect(() => {
   if (apiKey) localStorage.setItem("aurynox_owm_key", apiKey);
 }, [apiKey]);;
-  const [lat, setLat] = useState(40.9793);
-  const [lon, setLon] = useState(-74.1165);
+  const const [zip, setZip] = useState("07450");
   const [fetchStatus, setFetchStatus] = useState(""); // "", "loading", "error: ...", "ok: ..."
 
   const handleFetchLive = async () => {
     if (!apiKey.trim()) { setFetchStatus("error: paste your OpenWeather API key first"); return; }
     setFetchStatus("loading");
     try {
-      const text = await fetchOpenWeatherText(apiKey.trim(), lat, lon);
+      const text = await fetchOpenWeatherText(apiKey.trim(), zip.trim());
       setRaw(text);
       setFetchStatus(`ok: fetched live forecast at ${new Date().toLocaleTimeString()}`);
     } catch (e) {
@@ -425,7 +431,25 @@ useEffect(() => {
 
   const openRow = sim && sim.openAt !== null ? sim.data[sim.openAt] : null;
   const closeRow = sim && sim.closeAt !== null ? sim.data[sim.closeAt] : null;
-
+// openAt/closeAt only ever track the FIRST open window — a day with an overnight opening,
+  // a daytime close, and an evening re-opening would silently report just the first pair.
+  // This scans the whole day's per-hour mode to list every open segment instead.
+  const openSegments = useMemo(() => {
+    if (!sim) return [];
+    const segs = [];
+    let cur = null;
+    for (const d of sim.data) {
+      if (d.mode === "open") {
+        if (!cur) cur = { start: d.label, end: d.label, endIsLastRow: false };
+        else cur.end = d.label;
+      } else if (cur) {
+        segs.push(cur);
+        cur = null;
+      }
+    }
+    if (cur) { cur.endIsLastRow = true; segs.push(cur); }
+    return segs;
+  }, [sim]);
   const actualsMap = useMemo(() => parseActuals(actualsText), [actualsText]);
   const chartData = useMemo(() => {
     if (!sim) return [];
@@ -460,22 +484,36 @@ useEffect(() => {
           <div
             className="mb-6 rounded-xl p-5"
             style={{
-              background: openRow ? `linear-gradient(135deg, ${PALETTE.panel}, #16341F30)` : PALETTE.panel,
-              border: `1px solid ${openRow ? PALETTE.sageDeep : PALETTE.line}`,
+              background: openSegments.length > 0 ? `linear-gradient(135deg, ${PALETTE.panel}, #16341F30)` : PALETTE.panel,
+              border: `1px solid ${openSegments.length > 0 ? PALETTE.sageDeep : PALETTE.line}`,
             }}
           >
-            {openRow ? (
+            {openSegments.length > 0 ? (
               <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
                 <div>
-                  <div className="uppercase text-xs" style={{ color: PALETTE.sage, letterSpacing: "0.18em" }}>Tonight's call</div>
-                  <div className="text-xl md:text-2xl font-semibold mt-0.5">
-                    Open at <span style={{ color: PALETTE.sage }}>{openRow.label}</span>
-                    {closeRow ? <> · close by <span style={{ color: PALETTE.amber }}>{closeRow.label}</span></> : null}
+                  <div className="uppercase text-xs" style={{ color: PALETTE.sage, letterSpacing: "0.18em" }}>
+                    Tonight's call {openSegments.length > 1 ? `— ${openSegments.length} windows` : ""}
                   </div>
-                  {!closeRow && (
+                  <div className="text-xl md:text-2xl font-semibold mt-0.5 flex flex-wrap gap-x-3 gap-y-1">
+                    {openSegments.map((seg, i) => (
+                      <span key={i}>
+                        {i > 0 && <span style={{ color: PALETTE.dim, fontWeight: 400 }}>, then </span>}
+                        Open <span style={{ color: PALETTE.sage }}>{seg.start}</span>
+                        {seg.start !== seg.end && !seg.endIsLastRow && <> · close by <span style={{ color: PALETTE.amber }}>{seg.end}</span></>}
+                      </span>
+                    ))}
+                  </div>
+                  {openSegments.some((s) => s.endIsLastRow) && (
                     <div className="text-sm mt-1" style={{ color: PALETTE.warn }}>
-                      No close time found within this forecast — conditions stay favorable through the last hour pasted, but that doesn't mean it's safe to leave windows open indefinitely. Paste a forecast that extends into tomorrow morning for an actual close time, or check dew point/rain/outdoor temp again by hand before sunrise.
+                      {openSegments[openSegments.length - 1].start === openSegments[openSegments.length - 1].end ? "The" : "The last"} window above is still open when the pasted forecast runs out — conditions stay favorable through the last hour pasted, but that doesn't mean it's safe to leave windows open indefinitely. Paste a forecast that extends further out for an actual close time, or check conditions again by hand once this window ends.
                     </div>
+                  )}
+                  {openSegments.length > 1 && (
+                    <div className="text-xs mt-1" style={{ color: PALETTE.dim }}>
+                      Capture ratio and drop stats below reflect the first window only — check the hourly strip further down for the full picture across all {openSegments.length}.
+                    </div>
+                  )}
+                </div>
                   )}
                 </div>
                 <div className="flex gap-6 text-sm font-mono flex-wrap">
@@ -710,8 +748,14 @@ useEffect(() => {
                 style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}` }}
               />
             </label>
-            <Num label="Lat" value={lat} onChange={setLat} step={0.0001} width="7rem" />
-            <Num label="Lon" value={lon} onChange={setLon} step={0.0001} width="7rem" />
+            <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
+              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Zip code</span>
+              <input
+                type="text" value={zip} onChange={(e) => setZip(e.target.value)}
+                className="rounded px-2 py-1.5 font-mono text-sm outline-none"
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "6rem" }}
+              />
+            </label>
             <button
               onClick={handleFetchLive}
               className="rounded px-4 py-2 text-sm font-semibold"
