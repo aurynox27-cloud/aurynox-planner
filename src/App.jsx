@@ -325,12 +325,12 @@ export default function AurynoxNightPlanner() {
   const [cSolar, setCSolar] = useState(0.5575);
   const [peakHour, setPeakHour] = useState(13.0);
   const [bumpWidth, setBumpWidth] = useState(4.5);
-  const [ceiling, setCeiling] = useState(78);
+  const [ceiling, setCeiling] = useState(80);
   const [peakStart, setPeakStart] = useState(16);
   const [peakEnd, setPeakEnd] = useState(21);
   const [precoolLead, setPrecoolLead] = useState(3);
   const [maxAcRate, setMaxAcRate] = useState(1.5);
-  const [dewMax, setDewMax] = useState(63);
+  const [dewMax, setDewMax] = useState(65);
   const [precipMax, setPrecipMax] = useState(40);
   const [rate, setRate] = useState(0.281);
 
@@ -530,7 +530,7 @@ export default function AurynoxNightPlanner() {
               <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.amber }} />AC (pre-cool)</span>
               <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.warn }} />AC (comfort)</span>
             </div>
-            {!simpleMode && (() => {
+            {(() => {
               const spans = [];
               let cur = null;
               for (const d of sim.data) {
@@ -559,7 +559,7 @@ export default function AurynoxNightPlanner() {
           </div>
         )}
 
-        {sim && (
+        {sim && !simpleMode && (
           <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
             <ResponsiveContainer width="100%" height={280}>
               <ComposedChart data={sim.data} margin={{ top: 8, right: 12, bottom: 0, left: -18 }}>
@@ -644,8 +644,7 @@ export default function AurynoxNightPlanner() {
           </div>
         </div>
 
-        {!simpleMode && (
-          <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
+        <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
           <div className="uppercase text-xs mb-3" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
             {simpleMode ? "Settings" : "Model inputs"}
           </div>
