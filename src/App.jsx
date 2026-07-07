@@ -470,8 +470,13 @@ useEffect(() => {
                   <div className="uppercase text-xs" style={{ color: PALETTE.sage, letterSpacing: "0.18em" }}>Tonight's call</div>
                   <div className="text-xl md:text-2xl font-semibold mt-0.5">
                     Open at <span style={{ color: PALETTE.sage }}>{openRow.label}</span>
-                    {closeRow ? <> · close by <span style={{ color: PALETTE.amber }}>{closeRow.label}</span></> : <> · run through end of forecast</>}
+                    {closeRow ? <> · close by <span style={{ color: PALETTE.amber }}>{closeRow.label}</span></> : null}
                   </div>
+                  {!closeRow && (
+                    <div className="text-sm mt-1" style={{ color: PALETTE.warn }}>
+                      No close time found within this forecast — conditions stay favorable through the last hour pasted, but that doesn't mean it's safe to leave windows open indefinitely. Paste a forecast that extends into tomorrow morning for an actual close time, or check dew point/rain/outdoor temp again by hand before sunrise.
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-6 text-sm font-mono flex-wrap">
                   <div><div style={{ color: PALETTE.dim }}>proj. drop</div><div className="text-lg" style={{ color: PALETTE.sage }}>{sim.drop.toFixed(1)}°F</div></div>
