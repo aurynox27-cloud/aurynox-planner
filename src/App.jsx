@@ -479,7 +479,7 @@ useEffect(() => {
           </div>
         </div>
 
-        {/* Verdict card */}
+       {/* Verdict card */}
         {sim && (
           <div
             className="mb-6 rounded-xl p-5"
@@ -512,8 +512,6 @@ useEffect(() => {
                     <div className="text-xs mt-1" style={{ color: PALETTE.dim }}>
                       Capture ratio and drop stats below reflect the first window only — check the hourly strip further down for the full picture across all {openSegments.length}.
                     </div>
-                  )}
-                </div>
                   )}
                 </div>
                 <div className="flex gap-6 text-sm font-mono flex-wrap">
