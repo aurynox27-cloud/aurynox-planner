@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, Tooltip, Legend, ReferenceArea, ResponsiveContainer, CartesianGrid,
 } from "recharts";
@@ -386,7 +386,11 @@ export default function AurynoxNightPlanner() {
   const [peakEnd, setPeakEnd] = useState(21);
   const [precoolLead, setPrecoolLead] = useState(3);
   const [maxAcRate, setMaxAcRate] = useState(1.5);
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("aurynox_owm_key") || "");
+
+useEffect(() => {
+  if (apiKey) localStorage.setItem("aurynox_owm_key", apiKey);
+}, [apiKey]);;
   const [lat, setLat] = useState(40.9793);
   const [lon, setLon] = useState(-74.1165);
   const [fetchStatus, setFetchStatus] = useState(""); // "", "loading", "error: ...", "ok: ..."
