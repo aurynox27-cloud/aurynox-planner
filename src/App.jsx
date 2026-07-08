@@ -132,6 +132,7 @@ function simulate(rows, params) {
 
   const mode = new Array(rows.length).fill("pre");
   const temp = new Array(rows.length).fill(indoorStart);
+  const acSetpoint = new Array(rows.length).fill(null);
   let T = indoorStart;
   let i = startIdx;
   let peakAvoidedFully = true, peakPrecoolHours = 0, peakForcedAcHours = 0, peakLimitedByLeadTime = false;
@@ -219,7 +220,6 @@ function simulate(rows, params) {
       reasons.push(`outside (${r.outdoor}°) not cooler than inside (${temp[idx].toFixed(0)}°)`);
     }
     if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${acSetpoint[idx].toFixed(0)}°F now, hold through peak start (${peakStart}:00–${peakEnd}:00)`);
-    if (active && mode[idx] === "ac-precool") reasons.push(`pre-cooling ahead of peak window (${peakStart}:00–${peakEnd}:00)`);
     return {
       label: r.label, hour: r.hour, outdoor: r.outdoor, dew: r.dew, precip: r.precip,
       eligible: active && (mode[idx] === "open"),
@@ -230,7 +230,6 @@ function simulate(rows, params) {
     };
   });
 
-  const acSetpoint = new Array(rows.length).fill(null);
   let openAt = null, closeAt = null, savedKwh = 0, savedCost = 0;
   for (let k = startIdx; k < rows.length; k++) {
     if (mode[k] === "open") {
