@@ -187,6 +187,7 @@ function simulate(rows, params) {
           peakLimitedByLeadTime = true;
           if (!peakHoldsAt(T)) peakAvoidedFully = false;
         }
+        for (const u of used) acSetpoint[u.k] = T;
       }
     }
 
@@ -217,7 +218,7 @@ function simulate(rows, params) {
     if (active && mode[idx] === "sealed" && elig[idx] && r.outdoor >= temp[idx]) {
       reasons.push(`outside (${r.outdoor}°) not cooler than inside (${temp[idx].toFixed(0)}°)`);
     }
-    if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${temp[idx].toFixed(0)}°F — pre-cooling ahead of peak (${peakStart}:00–${peakEnd}:00)`);
+    if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${acSetpoint[idx].toFixed(0)}°F now, hold through peak start (${peakStart}:00–${peakEnd}:00)`);
     if (active && mode[idx] === "ac-precool") reasons.push(`pre-cooling ahead of peak window (${peakStart}:00–${peakEnd}:00)`);
     return {
       label: r.label, hour: r.hour, outdoor: r.outdoor, dew: r.dew, precip: r.precip,
@@ -229,6 +230,7 @@ function simulate(rows, params) {
     };
   });
 
+  const acSetpoint = new Array(rows.length).fill(null);
   let openAt = null, closeAt = null, savedKwh = 0, savedCost = 0;
   for (let k = startIdx; k < rows.length; k++) {
     if (mode[k] === "open") {
