@@ -286,18 +286,32 @@ function dewPointF(tempF, rh) {
 // Your Apps Script Web App already handles SwitchBot auth server-side and returns clean JSON —
 // no CORS problem (unlike calling SwitchBot directly from a browser) and no credentials needed here.
 // Averages every room's temperature found in the response (works with however many sensors exist).
-async function fetchAppsScriptIndoorTemp(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Apps Script returned ${res.status} — check the URL is correct and still deployed.`);
-  const json = await res.json();
-  const temps = [];
-  for (const key of Object.keys(json)) {
-    const tempC = json[key]?.body?.temperature;
-    if (typeof tempC === "number") temps.push({ room: key, f: tempC * 9 / 5 + 32 });
-  }
-  if (!temps.length) throw new Error("No temperature readings found in the response — check the Apps Script is returning sensor data.");
-  const avg = temps.reduce((s, t) => s + t.f, 0) / temps.length;
-  return { avg, temps };
+// Apps Script doesn't reliably send CORS headers, so a normal fetch() gets blocked by the
+// browser before it even reaches the script. JSONP sidesteps this entirely — script tags
+// aren't subject to CORS — by loading the URL as a <script> and having Apps Script wrap its
+// JSON response in a callback function we define here.
+function fetchAppsScriptIndoorTemp(url) {
+  return new Promise((resolve, reject) => {
+    const callbackName = "aurynoxCb_" + Date.now();
+    window[callbackName] = (json) => {
+      delete window[callbackName];
+      script.remove();
+      try {
+        const temps = [];
+        for (const key of Object.keys(json)) {
+          const tempC = json[key]?.body?.temperature;
+          if (typeof tempC === "number") temps.push({ room: key, f: tempC * 9 / 5 + 32 });
+        }
+        if (!temps.length) { reject(new Error("No temperature readings found — check the Apps Script is returning sensor data.")); return; }
+        const avg = temps.reduce((s, t) => s + t.f, 0) / temps.length;
+        resolve({ avg, temps });
+      } catch (e) { reject(e); }
+    };
+    const script = document.createElement("script");
+    script.src = `${url}${url.includes("?") ? "&" : "?"}callback=${callbackName}`;
+    script.onerror = () => { delete window[callbackName]; reject(new Error("Couldn't load the Apps Script URL — check it's correct and still deployed.")); };
+    document.body.appendChild(script);
+  });
 }
 
 async function fetchOpenWeatherText(apiKey, zip) {
