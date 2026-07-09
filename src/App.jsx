@@ -138,7 +138,7 @@ function simulate(rows, params) {
 
   while (i < rows.length) {
     if (inPeak(i) && (i === startIdx || !inPeak(i - 1))) {
-      const const leadStart = startIdx; // search the whole available window, not a fixed hour cap
+      const leadStart = startIdx; // search the whole available window, not a fixed hour cap
       let lo = 55, hi = ceiling;
       const peakHoldsAt = (startTemp) => {
         let t = startTemp;
