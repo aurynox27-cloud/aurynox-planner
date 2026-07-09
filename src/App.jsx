@@ -283,32 +283,21 @@ function dewPointF(tempF, rh) {
   return dewC * 9 / 5 + 32;
 }
 
-// SwitchBot Cloud API auth: HMAC-SHA256 of (token+t+nonce), base64-encoded, using the browser's
-// native Web Crypto API — no extra library needed. Same signing scheme as the Python poller script.
-async function switchBotSign(token, secret) {
-  const t = Date.now().toString();
-  const nonce = crypto.randomUUID();
-  const data = token + t + nonce;
-  const key = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-  );
-  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
-  const sign = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
-  return { t, nonce, sign };
-}
-
-async function fetchSwitchBotTempF(token, secret, deviceId) {
-  const { t, nonce, sign } = await switchBotSign(token, secret);
-  const res = await fetch(`https://api.switch-bot.com/v1.1/devices/${deviceId}/status`, {
-    headers: { Authorization: token, sign, nonce, t },
-  });
-  if (!res.ok) throw new Error(`SwitchBot returned ${res.status} — check token/secret.`);
+// Your Apps Script Web App already handles SwitchBot auth server-side and returns clean JSON —
+// no CORS problem (unlike calling SwitchBot directly from a browser) and no credentials needed here.
+// Averages every room's temperature found in the response (works with however many sensors exist).
+async function fetchAppsScriptIndoorTemp(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Apps Script returned ${res.status} — check the URL is correct and still deployed.`);
   const json = await res.json();
-  if (json.statusCode !== 100) throw new Error(json.message || "SwitchBot API error");
-  const tempC = json.body?.temperature;
-  if (tempC === undefined) throw new Error("No temperature in response — check the device ID and that it's paired to a hub.");
-  return tempC * 9 / 5 + 32;
+  const temps = [];
+  for (const key of Object.keys(json)) {
+    const tempC = json[key]?.body?.temperature;
+    if (typeof tempC === "number") temps.push({ room: key, f: tempC * 9 / 5 + 32 });
+  }
+  if (!temps.length) throw new Error("No temperature readings found in the response — check the Apps Script is returning sensor data.");
+  const avg = temps.reduce((s, t) => s + t.f, 0) / temps.length;
+  return { avg, temps };
 }
 
 async function fetchOpenWeatherText(apiKey, zip) {
@@ -368,12 +357,8 @@ export default function AurynoxNightPlanner() {
   useEffect(() => { if (zip) localStorage.setItem("aurynox_zip", zip); }, [zip]);
   const [fetchStatus, setFetchStatus] = useState("");
 
-  const [sbToken, setSbToken] = useState(() => localStorage.getItem("aurynox_sb_token") || "");
-  useEffect(() => { if (sbToken) localStorage.setItem("aurynox_sb_token", sbToken); }, [sbToken]);
-  const [sbSecret, setSbSecret] = useState(() => localStorage.getItem("aurynox_sb_secret") || "");
-  useEffect(() => { if (sbSecret) localStorage.setItem("aurynox_sb_secret", sbSecret); }, [sbSecret]);
-  const [sbDeviceId, setSbDeviceId] = useState(() => localStorage.getItem("aurynox_sb_device") || "");
-  useEffect(() => { if (sbDeviceId) localStorage.setItem("aurynox_sb_device", sbDeviceId); }, [sbDeviceId]);
+  const [sensorUrl, setSensorUrl] = useState(() => localStorage.getItem("aurynox_sensor_url") || "");
+  useEffect(() => { if (sensorUrl) localStorage.setItem("aurynox_sensor_url", sensorUrl); }, [sensorUrl]);
   const [sensorFetchStatus, setSensorFetchStatus] = useState("");
 
   const [simpleMode, setSimpleMode] = useState(() => localStorage.getItem("aurynox_simple") !== "false");
@@ -392,15 +377,13 @@ export default function AurynoxNightPlanner() {
   };
 
   const fetchSensorData = async () => {
-    if (!sbToken.trim() || !sbSecret.trim() || !sbDeviceId.trim()) {
-      setSensorFetchStatus("error: fill in token, secret, and device ID first");
-      return;
-    }
+    if (!sensorUrl.trim()) { setSensorFetchStatus("error: paste your Apps Script URL first"); return; }
     setSensorFetchStatus("loading");
     try {
-      const tempF = await fetchSwitchBotTempF(sbToken.trim(), sbSecret.trim(), sbDeviceId.trim());
-      setIndoorStart(+tempF.toFixed(1));
-      setSensorFetchStatus(`ok: read ${tempF.toFixed(1)}°F at ${new Date().toLocaleTimeString()}`);
+      const { avg, temps } = await fetchAppsScriptIndoorTemp(sensorUrl.trim());
+      setIndoorStart(+avg.toFixed(1));
+      const detail = temps.map((t) => `${t.room}: ${t.f.toFixed(1)}°F`).join(", ");
+      setSensorFetchStatus(`ok: avg ${avg.toFixed(1)}°F (${detail}) at ${new Date().toLocaleTimeString()}`);
     } catch (e) {
       setSensorFetchStatus(`error: ${e.message}`);
     }
@@ -681,34 +664,16 @@ export default function AurynoxNightPlanner() {
 
         <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
           <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-            Indoor sensor (SwitchBot)
+            Indoor sensor (Apps Script)
           </div>
           <div className="flex flex-wrap gap-3 items-end">
-            <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
-              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Token</span>
+            <label className="flex flex-col gap-1 text-xs flex-1 min-w-[280px]" style={{ color: PALETTE.dim }}>
+              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Apps Script URL (remembered on this device)</span>
               <input
-                type="password" value={sbToken} onChange={(e) => setSbToken(e.target.value)}
-                placeholder="SwitchBot token"
+                type="text" value={sensorUrl} onChange={(e) => setSensorUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
                 className="rounded px-2 py-1.5 font-mono text-sm outline-none"
-                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "12rem" }}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
-              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Secret</span>
-              <input
-                type="password" value={sbSecret} onChange={(e) => setSbSecret(e.target.value)}
-                placeholder="SwitchBot secret"
-                className="rounded px-2 py-1.5 font-mono text-sm outline-none"
-                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "12rem" }}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
-              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Device ID</span>
-              <input
-                type="text" value={sbDeviceId} onChange={(e) => setSbDeviceId(e.target.value)}
-                placeholder="e.g. EC6F00463B46"
-                className="rounded px-2 py-1.5 font-mono text-sm outline-none"
-                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "10rem" }}
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}` }}
               />
             </label>
             <button
@@ -726,7 +691,7 @@ export default function AurynoxNightPlanner() {
           )}
           {!simpleMode && (
             <div className="text-xs mt-2 leading-relaxed" style={{ color: PALETTE.dim }}>
-              Reads live temperature straight from your sensor and fills in "Indoor now °F" below — no more typing it in by hand. Credentials stay in this browser only, same as the weather key above.
+              Averages every room your Apps Script returns and fills "Indoor now °F" below — matches how the model itself was calibrated, on a whole-house average, not any single room. No credentials needed here; your Apps Script already handles that server-side.
             </div>
           )}
         </div>
