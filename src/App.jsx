@@ -138,7 +138,7 @@ function simulate(rows, params) {
 
   while (i < rows.length) {
     if (inPeak(i) && (i === startIdx || !inPeak(i - 1))) {
-      const leadStart = Math.max(startIdx, i - precoolLead);
+      const const leadStart = startIdx; // search the whole available window, not a fixed hour cap
       let lo = 55, hi = ceiling;
       const peakHoldsAt = (startTemp) => {
         let t = startTemp;
@@ -156,10 +156,10 @@ function simulate(rows, params) {
       } else {
         for (let iter = 0; iter < 20; iter++) {
           const mid = (lo + hi) / 2;
-          if (peakHoldsAt(mid)) hi = mid; else lo = mid;
+          if (peakHoldsAt(mid)) lo = mid; else hi = mid;
         }
       }
-      const target = hi;
+      const target = lo;
       if (peakHoldsAt(target) && target < T - 0.1) {
         const gap = T - target;
         let remaining = gap;
@@ -218,7 +218,7 @@ function simulate(rows, params) {
       reasons.push(`outside (${r.outdoor}°) not cooler than inside (${temp[idx].toFixed(0)}°)`);
     }
     if (active && mode[idx] === "ac") reasons.push(`would exceed ${ceiling}° comfort ceiling — AC engaged`);
-    if (active && mode[idx] === "ac-precool") reasons.push(`pre-cooling ahead of peak window (${peakStart}:00–${peakEnd}:00)`);
+    if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${temp[idx].toFixed(0)}°F now, hold through peak start (${peakStart}:00–${peakEnd}:00)`);
     return {
       label: r.label, hour: r.hour, outdoor: r.outdoor, dew: r.dew, precip: r.precip,
       eligible: active && (mode[idx] === "open"),
@@ -338,14 +338,14 @@ export default function AurynoxNightPlanner() {
   const [indoorStart, setIndoorStart] = useState(78);
   const [startHour, setStartHour] = useState(8);
   const [aOpen, setAOpen] = useState(0.0677);
-  const [aClosed, setAClosed] = useState(0.0169);
-  const [cSolar, setCSolar] = useState(0.5575);
-  const [peakHour, setPeakHour] = useState(13.0);
-  const [bumpWidth, setBumpWidth] = useState(4.5);
-  const [ceiling, setCeiling] = useState(78);
+  const [aClosed, setAClosed] = useState(0.0105);
+  const [cSolar, setCSolar] = useState(0.7071);
+  const [peakHour, setPeakHour] = useState(12.5);
+  const [bumpWidth, setBumpWidth] = useState(6.0);
+  const [ceiling, setCeiling] = useState(76);
   const [peakStart, setPeakStart] = useState(16);
   const [peakEnd, setPeakEnd] = useState(21);
-  const [precoolLead, setPrecoolLead] = useState(3);
+  
   const [maxAcRate, setMaxAcRate] = useState(1.5);
   const [dewMax, setDewMax] = useState(63);
   const [precipMax, setPrecipMax] = useState(40);
@@ -396,8 +396,8 @@ export default function AurynoxNightPlanner() {
   }, [rows, startHour]);
 
   const sim = useMemo(
-    () => (rows.length ? simulate(rows, { indoorStart, startIdx, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, ceiling, peakStart, peakEnd, precoolLead, maxAcRate }) : null),
-    [rows, indoorStart, startIdx, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, ceiling, peakStart, peakEnd, precoolLead, maxAcRate]
+    () => (rows.length ? simulate(rows, { indoorStart, startIdx, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, ceiling, peakStart, peakEnd, maxAcRate }) : null),
+    [rows, indoorStart, startIdx, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, ceiling, peakStart, peakEnd, maxAcRate]
   );
 
   const openSegments = useMemo(() => {
@@ -510,7 +510,7 @@ export default function AurynoxNightPlanner() {
                 </div>
               ) : sim.peakLimitedByLeadTime && sim.peakAvoidedFully ? (
                 <div className="text-sm" style={{ color: PALETTE.amber }}>
-                  Tight — used all {precoolLead}hr of lead time, just made it. More lead time would help.
+                  Tight — used all {sim.precoolHours}hr of available lead time, just made it. Extending the forecast further back would help.
                 </div>
               ) : sim.peakLimitedByLeadTime ? (
                 <div className="text-sm" style={{ color: PALETTE.warn }}>
@@ -564,16 +564,58 @@ export default function AurynoxNightPlanner() {
               <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.amber }} />AC (pre-cool)</span>
               <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.warn }} />AC (comfort)</span>
             </div>
-            {(() => {
+          {(() => {
+              // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific
+              // number, so consecutive hours merge whenever the underlying story is the same —
+              // showing "dew 64-67° (limit 65°)" as one line instead of several near-duplicates.
+              const categorize = (r) => {
+                let m = r.match(/dew (-?[\d.]+)° ≥ ([\d.]+)° limit/);
+                if (m) return { type: "dew", val: +m[1], limit: +m[2] };
+                m = r.match(/rain risk ([\d.]+)%/);
+                if (m) return { type: "rain", val: +m[1] };
+                m = r.match(/outside \((-?[\d.]+)°\) not cooler than inside \((-?[\d.]+)°\)/);
+                if (m) return { type: "notCooler", out: +m[1], inside: +m[2] };
+                m = r.match(/would exceed ([\d.]+)° comfort ceiling/);
+                if (m) return { type: "ceiling", val: +m[1] };
+                m = r.match(/set AC to ([\d.]+)°F now, hold through peak start \((\d+):00–(\d+):00\)/);
+                if (m) return { type: "precool", val: +m[1], ps: m[2], pe: m[3] };
+                return { type: "other", raw: r };
+              };
+
               const spans = [];
               let cur = null;
               for (const d of sim.data) {
-                const key = d.reasons.join("; ");
-                if (!key) { cur = null; continue; }
-                if (cur && cur.key === key) { cur.end = d.label; }
-                else { cur = { key, start: d.label, end: d.label }; spans.push(cur); }
+                if (!d.reasons.length) { cur = null; continue; }
+                const cats = d.reasons.map(categorize);
+                const typeKey = cats.map((c) => c.type).sort().join(",");
+                if (cur && cur.typeKey === typeKey) {
+                  cur.end = d.label;
+                  cats.forEach((c, idx) => cur.cats[idx].push(c));
+                } else {
+                  cur = { typeKey, start: d.label, end: d.label, cats: cats.map((c) => [c]) };
+                  spans.push(cur);
+                }
               }
               if (!spans.length) return null;
+
+              const renderCat = (group) => {
+                const first = group[0];
+                if (first.type === "dew") {
+                  const vals = group.map((g) => g.val);
+                  const lo = Math.min(...vals), hi = Math.max(...vals);
+                  return `dew ${lo === hi ? lo : `${lo}–${hi}`}° (limit ${first.limit}°)`;
+                }
+                if (first.type === "rain") {
+                  const vals = group.map((g) => g.val);
+                  const lo = Math.min(...vals), hi = Math.max(...vals);
+                  return `rain risk ${lo === hi ? lo : `${lo}–${hi}`}%`;
+                }
+                if (first.type === "notCooler") return `outside not yet cooler than inside`;
+                if (first.type === "ceiling") return `would exceed ${first.val}° comfort ceiling — AC engaged`;
+                if (first.type === "precool") return `set AC to ${first.val}°F now, hold through peak start (${first.ps}:00–${first.pe}:00)`;
+                return first.raw;
+              };
+
               return (
                 <div className="mt-3 rounded-lg p-3" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
                   <div className="uppercase text-xs mb-2" style={{ color: PALETTE.warn, letterSpacing: "0.18em" }}>Why not ventilating</div>
@@ -583,13 +625,14 @@ export default function AurynoxNightPlanner() {
                         <span className="font-mono shrink-0" style={{ color: PALETTE.amber, fontSize: "0.78rem" }}>
                           {s.start === s.end ? s.start : `${s.start}–${s.end}`}
                         </span>
-                        <span style={{ color: PALETTE.text }}>{s.key}</span>
+                        <span style={{ color: PALETTE.text }}>{s.cats.map(renderCat).join("; ")}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               );
             })()}
+          
           </div>
         )}
 
@@ -732,7 +775,7 @@ export default function AurynoxNightPlanner() {
                 <Num label="Solar width hr" value={bumpWidth} onChange={setBumpWidth} step={0.5} />
                 <Num label="Peak start hr" value={peakStart} onChange={setPeakStart} />
                 <Num label="Peak end hr" value={peakEnd} onChange={setPeakEnd} />
-                <Num label="Precool lead hrs" value={precoolLead} onChange={setPrecoolLead} />
+        
                 <Num label="AC rate @75-80°F" value={maxAcRate} onChange={setMaxAcRate} step={0.1} />
               </>
             )}
