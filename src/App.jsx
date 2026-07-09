@@ -320,6 +320,7 @@ async function fetchOpenWeatherText(apiKey, zip) {
 export default function AurynoxNightPlanner() {
   const [raw, setRaw] = useState(DEFAULT_FORECAST);
   const [indoorStart, setIndoorStart] = useState(78);
+  const [sensorStatus, setSensorStatus] = useState(null);
   const [startHour, setStartHour] = useState(8);
   const [aOpen, setAOpen] = useState(0.0677);
   const [aClosed, setAClosed] = useState(0.0169);
@@ -355,7 +356,51 @@ export default function AurynoxNightPlanner() {
       setFetchStatus(`error: ${e.message}`);
     }
   };
+const SENSOR_URL =
+  "https://script.google.com/macros/s/AKfycbz_f-JuwfqiRN_ksQNSEASzRnBxpzfJHCvVwQ6vLX6pwSC2LWQb971gfSLanLt7wtCkfg/exec";
 
+const fetchSensorData = async () => {
+  setFetchStatus("loading sensors...");
+
+  try {
+    const res = await fetch(SENSOR_URL);
+
+    if (!res.ok) {
+      throw new Error(`Sensor server returned ${res.status}`);
+    }
+
+    const data = await res.json();
+
+    console.log("Sensor data:", data);
+
+    setSensorStatus(data);
+
+    const bedroomTemp =
+      data?.primary_bedroom?.body?.temperature;
+
+    if (typeof bedroomTemp === "number") {
+      setIndoorStart(bedroomTemp);
+      setFetchStatus(
+        `sensor updated: bedroom ${bedroomTemp.toFixed(1)}°F`
+      );
+    } else {
+      setFetchStatus(
+        "sensor connected, but bedroom temperature missing"
+      );
+    }
+
+  } catch (e) {
+    console.error("Sensor fetch failed:", e);
+    setFetchStatus(`sensor error: ${e.message}`);
+  }
+};
+  <button
+  onClick={fetchSensorData}
+  className="rounded px-4 py-2 text-sm font-semibold"
+  style={{ background: PALETTE.sageDeep, color: PALETTE.text }}
+>
+  Fetch indoor sensors
+</button>
   const rows = useMemo(() => parseForecast(raw), [raw]);
   const startIdx = useMemo(() => {
     const i = rows.findIndex((r) => r.hour >= startHour);
@@ -616,6 +661,16 @@ export default function AurynoxNightPlanner() {
             >
               {fetchStatus === "loading" ? "Fetching…" : "Fetch forecast"}
             </button>
+            <button
+  onClick={fetchSensorData}
+  className="rounded px-4 py-2 text-sm font-semibold"
+  style={{
+    background: PALETTE.sageDeep,
+    color: PALETTE.text
+  }}
+>
+  Fetch indoor sensors
+</button>
           </div>
           {fetchStatus && fetchStatus !== "loading" && (
             <div className="text-xs mt-2" style={{ color: fetchStatus.startsWith("error") ? PALETTE.warn : PALETTE.sage }}>
