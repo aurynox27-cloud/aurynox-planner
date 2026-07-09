@@ -355,39 +355,7 @@ export default function AurynoxNightPlanner() {
     } catch (e) {
       setFetchStatus(`error: ${e.message}`);
     }
-  };
-const SENSOR_URL =
-  "https://script.google.com/macros/s/AKfycbz_f-JuwfqiRN_ksQNSEASzRnBxpzfJHCvVwQ6vLX6pwSC2LWQb971gfSLanLt7wtCkfg/exec";
-
-const fetchSensorData = async () => {
-  setFetchStatus("loading sensors...");
-
-  try {
-    const res = await fetch(SENSOR_URL);
-
-    if (!res.ok) {
-      throw new Error(`Sensor server returned ${res.status}`);
-    }
-
-    const data = await res.json();
-
-    console.log("Sensor data:", data);
-
-    setSensorStatus(data);
-
-    const bedroomTemp =
-      data?.primary_bedroom?.body?.temperature;
-
-    if (typeof bedroomTemp === "number") {
-      setIndoorStart(bedroomTemp);
-      setFetchStatus(
-        `sensor updated: bedroom ${bedroomTemp.toFixed(1)}°F`
-      );
-    } else {
-      setFetchStatus(
-        "sensor connected, but bedroom temperature missing"
-      );
-    }
+{"primary_bedroom":{"statusCode":100,"body":{"version":"V1.0","temperature":25.3,"battery":100,"humidity":51,"deviceId":"EE2E04863238","deviceType":"MeterPlus","hubDeviceId":"FD3AA3F99193"},"message":"success"},"living_room":{"statusCode":100,"body":{"version":"V1.0","temperature":25.2,"battery":100,"humidity":49,"deviceId":"EE2E02C62376","deviceType":"MeterPlus","hubDeviceId":"FD3AA3F99193"},"message":"success"},"kitchen":{"statusCode":100,"body":{"version":"V1.0","temperature":25.9,"battery":100,"humidity":49,"deviceId":"EC6F00463B46","deviceType":"MeterPlus","hubDeviceId":"FD3AA3F99193"},"message":"success"}}
 
   } catch (e) {
     console.error("Sensor fetch failed:", e);
