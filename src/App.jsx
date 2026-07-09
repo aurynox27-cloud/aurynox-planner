@@ -355,7 +355,6 @@ export default function AurynoxNightPlanner() {
     } catch (e) {
       setFetchStatus(`error: ${e.message}`);
     }
-{"primary_bedroom":{"statusCode":100,"body":{"version":"V1.0","temperature":25.3,"battery":100,"humidity":51,"deviceId":"EE2E04863238","deviceType":"MeterPlus","hubDeviceId":"FD3AA3F99193"},"message":"success"},"living_room":{"statusCode":100,"body":{"version":"V1.0","temperature":25.2,"battery":100,"humidity":49,"deviceId":"EE2E02C62376","deviceType":"MeterPlus","hubDeviceId":"FD3AA3F99193"},"message":"success"},"kitchen":{"statusCode":100,"body":{"version":"V1.0","temperature":25.9,"battery":100,"humidity":49,"deviceId":"EC6F00463B46","deviceType":"MeterPlus","hubDeviceId":"FD3AA3F99193"},"message":"success"}}
 
   } catch (e) {
     console.error("Sensor fetch failed:", e);
