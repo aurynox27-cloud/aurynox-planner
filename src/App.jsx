@@ -132,7 +132,6 @@ function simulate(rows, params) {
 
   const mode = new Array(rows.length).fill("pre");
   const temp = new Array(rows.length).fill(indoorStart);
-  const acSetpoint = new Array(rows.length).fill(null);
   let T = indoorStart;
   let i = startIdx;
   let peakAvoidedFully = true, peakPrecoolHours = 0, peakForcedAcHours = 0, peakLimitedByLeadTime = false;
@@ -188,7 +187,6 @@ function simulate(rows, params) {
           peakLimitedByLeadTime = true;
           if (!peakHoldsAt(T)) peakAvoidedFully = false;
         }
-        for (const u of used) acSetpoint[u.k] = T;
       }
     }
 
@@ -219,7 +217,8 @@ function simulate(rows, params) {
     if (active && mode[idx] === "sealed" && elig[idx] && r.outdoor >= temp[idx]) {
       reasons.push(`outside (${r.outdoor}°) not cooler than inside (${temp[idx].toFixed(0)}°)`);
     }
-    if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${acSetpoint[idx].toFixed(0)}°F now, hold through peak start (${peakStart}:00–${peakEnd}:00)`);
+    if (active && mode[idx] === "ac") reasons.push(`would exceed ${ceiling}° comfort ceiling — AC engaged`);
+    if (active && mode[idx] === "ac-precool") reasons.push(`pre-cooling ahead of peak window (${peakStart}:00–${peakEnd}:00)`);
     return {
       label: r.label, hour: r.hour, outdoor: r.outdoor, dew: r.dew, precip: r.precip,
       eligible: active && (mode[idx] === "open"),
@@ -284,6 +283,34 @@ function dewPointF(tempF, rh) {
   return dewC * 9 / 5 + 32;
 }
 
+// SwitchBot Cloud API auth: HMAC-SHA256 of (token+t+nonce), base64-encoded, using the browser's
+// native Web Crypto API — no extra library needed. Same signing scheme as the Python poller script.
+async function switchBotSign(token, secret) {
+  const t = Date.now().toString();
+  const nonce = crypto.randomUUID();
+  const data = token + t + nonce;
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  const sign = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+  return { t, nonce, sign };
+}
+
+async function fetchSwitchBotTempF(token, secret, deviceId) {
+  const { t, nonce, sign } = await switchBotSign(token, secret);
+  const res = await fetch(`https://api.switch-bot.com/v1.1/devices/${deviceId}/status`, {
+    headers: { Authorization: token, sign, nonce, t },
+  });
+  if (!res.ok) throw new Error(`SwitchBot returned ${res.status} — check token/secret.`);
+  const json = await res.json();
+  if (json.statusCode !== 100) throw new Error(json.message || "SwitchBot API error");
+  const tempC = json.body?.temperature;
+  if (tempC === undefined) throw new Error("No temperature in response — check the device ID and that it's paired to a hub.");
+  return tempC * 9 / 5 + 32;
+}
+
 async function fetchOpenWeatherText(apiKey, zip) {
   const geoUrl = `https://api.openweathermap.org/geo/1.0/zip?zip=${encodeURIComponent(zip)},US&appid=${apiKey}`;
   const geoRes = await fetch(geoUrl);
@@ -320,7 +347,6 @@ async function fetchOpenWeatherText(apiKey, zip) {
 export default function AurynoxNightPlanner() {
   const [raw, setRaw] = useState(DEFAULT_FORECAST);
   const [indoorStart, setIndoorStart] = useState(78);
-  const [sensorStatus, setSensorStatus] = useState(null);
   const [startHour, setStartHour] = useState(8);
   const [aOpen, setAOpen] = useState(0.0677);
   const [aClosed, setAClosed] = useState(0.0169);
@@ -342,6 +368,14 @@ export default function AurynoxNightPlanner() {
   useEffect(() => { if (zip) localStorage.setItem("aurynox_zip", zip); }, [zip]);
   const [fetchStatus, setFetchStatus] = useState("");
 
+  const [sbToken, setSbToken] = useState(() => localStorage.getItem("aurynox_sb_token") || "");
+  useEffect(() => { if (sbToken) localStorage.setItem("aurynox_sb_token", sbToken); }, [sbToken]);
+  const [sbSecret, setSbSecret] = useState(() => localStorage.getItem("aurynox_sb_secret") || "");
+  useEffect(() => { if (sbSecret) localStorage.setItem("aurynox_sb_secret", sbSecret); }, [sbSecret]);
+  const [sbDeviceId, setSbDeviceId] = useState(() => localStorage.getItem("aurynox_sb_device") || "");
+  useEffect(() => { if (sbDeviceId) localStorage.setItem("aurynox_sb_device", sbDeviceId); }, [sbDeviceId]);
+  const [sensorFetchStatus, setSensorFetchStatus] = useState("");
+
   const [simpleMode, setSimpleMode] = useState(() => localStorage.getItem("aurynox_simple") !== "false");
   useEffect(() => { localStorage.setItem("aurynox_simple", String(simpleMode)); }, [simpleMode]);
 
@@ -355,19 +389,23 @@ export default function AurynoxNightPlanner() {
     } catch (e) {
       setFetchStatus(`error: ${e.message}`);
     }
+  };
 
-  } catch (e) {
-    console.error("Sensor fetch failed:", e);
-    setFetchStatus(`sensor error: ${e.message}`);
-  }
-};
-  <button
-  onClick={fetchSensorData}
-  className="rounded px-4 py-2 text-sm font-semibold"
-  style={{ background: PALETTE.sageDeep, color: PALETTE.text }}
->
-  Fetch indoor sensors
-</button>
+  const fetchSensorData = async () => {
+    if (!sbToken.trim() || !sbSecret.trim() || !sbDeviceId.trim()) {
+      setSensorFetchStatus("error: fill in token, secret, and device ID first");
+      return;
+    }
+    setSensorFetchStatus("loading");
+    try {
+      const tempF = await fetchSwitchBotTempF(sbToken.trim(), sbSecret.trim(), sbDeviceId.trim());
+      setIndoorStart(+tempF.toFixed(1));
+      setSensorFetchStatus(`ok: read ${tempF.toFixed(1)}°F at ${new Date().toLocaleTimeString()}`);
+    } catch (e) {
+      setSensorFetchStatus(`error: ${e.message}`);
+    }
+  };
+
   const rows = useMemo(() => parseForecast(raw), [raw]);
   const startIdx = useMemo(() => {
     const i = rows.findIndex((r) => r.hour >= startHour);
@@ -628,16 +666,6 @@ export default function AurynoxNightPlanner() {
             >
               {fetchStatus === "loading" ? "Fetching…" : "Fetch forecast"}
             </button>
-            <button
-  onClick={fetchSensorData}
-  className="rounded px-4 py-2 text-sm font-semibold"
-  style={{
-    background: PALETTE.sageDeep,
-    color: PALETTE.text
-  }}
->
-  Fetch indoor sensors
-</button>
           </div>
           {fetchStatus && fetchStatus !== "loading" && (
             <div className="text-xs mt-2" style={{ color: fetchStatus.startsWith("error") ? PALETTE.warn : PALETTE.sage }}>
@@ -651,10 +679,62 @@ export default function AurynoxNightPlanner() {
           )}
         </div>
 
-        <details open={!simpleMode} className="mb-6">
-          <summary className="uppercase text-xs mb-2 cursor-pointer" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-            {simpleMode ? "Trouble fetching? Paste a forecast manually ▸" : "Or paste an hourly forecast manually"}
-          </summary>
+        <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
+          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
+            Indoor sensor (SwitchBot)
+          </div>
+          <div className="flex flex-wrap gap-3 items-end">
+            <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
+              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Token</span>
+              <input
+                type="password" value={sbToken} onChange={(e) => setSbToken(e.target.value)}
+                placeholder="SwitchBot token"
+                className="rounded px-2 py-1.5 font-mono text-sm outline-none"
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "12rem" }}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
+              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Secret</span>
+              <input
+                type="password" value={sbSecret} onChange={(e) => setSbSecret(e.target.value)}
+                placeholder="SwitchBot secret"
+                className="rounded px-2 py-1.5 font-mono text-sm outline-none"
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "12rem" }}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
+              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Device ID</span>
+              <input
+                type="text" value={sbDeviceId} onChange={(e) => setSbDeviceId(e.target.value)}
+                placeholder="e.g. EC6F00463B46"
+                className="rounded px-2 py-1.5 font-mono text-sm outline-none"
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "10rem" }}
+              />
+            </label>
+            <button
+              onClick={fetchSensorData}
+              className="rounded px-4 py-2 text-sm font-semibold"
+              style={{ background: PALETTE.sageDeep, color: PALETTE.text }}
+            >
+              {sensorFetchStatus === "loading" ? "Reading…" : "Read indoor temp"}
+            </button>
+          </div>
+          {sensorFetchStatus && sensorFetchStatus !== "loading" && (
+            <div className="text-xs mt-2" style={{ color: sensorFetchStatus.startsWith("error") ? PALETTE.warn : PALETTE.sage }}>
+              {sensorFetchStatus}
+            </div>
+          )}
+          {!simpleMode && (
+            <div className="text-xs mt-2 leading-relaxed" style={{ color: PALETTE.dim }}>
+              Reads live temperature straight from your sensor and fills in "Indoor now °F" below — no more typing it in by hand. Credentials stay in this browser only, same as the weather key above.
+            </div>
+          )}
+        </div>
+
+        <div className="mb-6">
+          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
+            Or paste an hourly forecast manually
+          </div>
           <textarea
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
@@ -665,7 +745,7 @@ export default function AurynoxNightPlanner() {
           <div className="text-xs mt-1" style={{ color: PALETTE.dim }}>
             Parsed {rows.length} hours.
           </div>
-        </details>
+        </div>
 
         <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
           <div className="uppercase text-xs mb-3" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
