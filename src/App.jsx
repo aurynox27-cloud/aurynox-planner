@@ -409,6 +409,12 @@ function ZonePanel({ title, sim, simpleMode }) {
           );
         })}
       </div>
+      <div className="flex gap-4 mb-3 text-xs flex-wrap" style={{ color: PALETTE.dim }}>
+        <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.sageDeep }} />ventilate</span>
+        <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: "#2C3E4A" }} />coast</span>
+        <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.amber }} />AC (pre-cool)</span>
+        <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.acBlue }} />AC (comfort)</span>
+      </div>
       {simpleMode && (
         <div className="rounded-lg p-3" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
           <div className="text-xs" style={{ color: PALETTE.text }}>{buildNarrativeSummary(sim.data)}</div>
