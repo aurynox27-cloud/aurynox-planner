@@ -1,9 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import {
-  ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, ReferenceArea, ResponsiveContainer, CartesianGrid,
-} from "recharts";
 
-// ————— Aurynox brand: navy night sky + sage —————
 const PALETTE = {
   bg: "#0B1B2B",
   panel: "#102438",
@@ -15,6 +11,7 @@ const PALETTE = {
   sageDeep: "#7FA277",
   amber: "#E0A458",
   warn: "#C96F5D",
+  acBlue: "#5B8DBE",
 };
 
 const DEFAULT_FORECAST = `12 am\tThunderstorms\t73 °F\t73 °F\t100 %\t0.12 in\t86 %\t70 °F\t90 %\t5 mph ESE\t29.99 in
@@ -42,9 +39,6 @@ const DEFAULT_FORECAST = `12 am\tThunderstorms\t73 °F\t73 °F\t100 %\t0.12 in\t
 10 pm\tFew Showers\t66 °F\t68 °F\t32 %\t0 in\t99 %\t64 °F\t93 %\t8 mph NE\t30.03 in
 11 pm\tCloudy\t66 °F\t67 °F\t24 %\t0 in\t98 %\t64 °F\t93 %\t8 mph NE\t30.03 in`;
 
-// Parse a pasted hourly forecast table. Strategy: per line, read the hour from the
-// leading "N am/pm", then take °F values in order (temp, feels-like, dew) and
-// % values in order (precip, cloud, humidity). Forgiving about tabs vs spaces.
 function parseForecast(text) {
   const rows = [];
   const lines = text.split(/\n/).map((l) => l.trim()).filter(Boolean);
@@ -63,7 +57,6 @@ function parseForecast(text) {
       dew: degs.length >= 3 ? degs[2] : degs[degs.length - 1],
       precip: pcts.length >= 1 ? pcts[0] : 0,
       cloud: pcts.length >= 2 ? pcts[1] : 50,
-      windMatch: (line.match(/(\d+)\s*mph\s*([A-Z]{1,3})/) || [null, null, null]),
     });
   }
   return rows;
@@ -80,9 +73,7 @@ function counterfactualAC(hour, outdoor) {
   if (hour >= 18 && hour <= 21) base = Math.max(base, 3.8);
   return base;
 }
-function openHourLoad(hour) {
-  return hour >= 18 && hour <= 22 ? 1.3 : 0.6;
-}
+function openHourLoad(hour) { return hour >= 18 && hour <= 22 ? 1.3 : 0.6; }
 
 function solarGain(cloudPct, hour, peakHour, width) {
   const clearsky = Math.max(0, Math.min(1, (100 - cloudPct) / 100));
@@ -99,12 +90,20 @@ function acRateFor(outdoor, baseRate) {
   return baseRate * CAPACITY_RATIO.gt90;
 }
 
-function simulate(rows, params) {
-  const {
-    indoorStart, startIdx, aOpen, aClosed, dewMax, precipMax, cSolar, peakHour, bumpWidth,
-    ceiling, peakStart, peakEnd, precoolLead, maxAcRate,
-  } = params;
+function noNewOpenOvernight(hour) { return hour >= 22 || hour < 7; }
+function ceilingForHour(zone, hour) {
+  if (zone === "downstairs") return (hour >= 21 || hour < 6) ? 78 : 76;
+  return (hour >= 8 && hour < 20) ? 80 : 76;
+}
+function thermostatOffset(zone, hour) {
+  if (zone === "upstairs" && (hour >= 20 || hour < 8)) return 2;
+  return 0;
+}
 
+// Same simulate() logic as before, now taking a per-hour ceilings array instead of one flat
+// number, and with the AC rate-limiting fix (no more instant-snap to ceiling).
+function simulateZone(rows, startIdx, params, ceilings) {
+  const { indoorStart, aOpen, aClosed, dewMax, precipMax, cSolar, peakHour, bumpWidth, peakStart, peakEnd, maxAcRate } = params;
   const staticReasons = rows.map((r) => {
     const rs = [];
     if (r.dew >= dewMax) rs.push(`dew ${r.dew}° ≥ ${dewMax}° limit`);
@@ -113,47 +112,46 @@ function simulate(rows, params) {
   });
   const elig = staticReasons.map((rs) => rs.length === 0);
   const S = rows.map((r) => solarGain(r.cloud, r.hour, peakHour, bumpWidth));
-
-  let sealedT = indoorStart;
-  const sealedTrace = [];
-  for (let i = 0; i < rows.length; i++) {
-    if (i >= startIdx) sealedT = sealedT + aClosed * (rows[i].outdoor - sealedT) + cSolar * S[i];
-    sealedTrace.push(sealedT);
-  }
-
   const step = (T, i, mode) => {
     const r = rows[i];
     if (mode === "open") return T + aOpen * (r.outdoor - T);
-    if (mode === "ac") return Math.min(T, ceiling);
+    if (mode === "ac") {
+      const rate = acRateFor(r.outdoor, maxAcRate);
+      return Math.max(ceilings[i], T - rate);
+    }
     return T + aClosed * (r.outdoor - T) + cSolar * S[i];
   };
-
   const inPeak = (i) => rows[i].hour >= peakStart && rows[i].hour < peakEnd;
-
   const mode = new Array(rows.length).fill("pre");
   const temp = new Array(rows.length).fill(indoorStart);
+  const acSetpoint = new Array(rows.length).fill(null);
   let T = indoorStart;
   let i = startIdx;
   let peakAvoidedFully = true, peakPrecoolHours = 0, peakForcedAcHours = 0, peakLimitedByLeadTime = false;
+  const canOpenAt = (i) => {
+    if (!noNewOpenOvernight(rows[i].hour)) return true;
+    return i > startIdx && mode[i - 1] === "open";
+  };
 
   while (i < rows.length) {
     if (inPeak(i) && (i === startIdx || !inPeak(i - 1))) {
-      const leadStart = startIdx; // search the whole available window, not a fixed hour cap
-      let lo = 55, hi = ceiling;
+      const leadStart = startIdx;
+      let lo = 55, hi = ceilings[i];
       const peakHoldsAt = (startTemp) => {
         let t = startTemp;
+        let prevOpen = i > startIdx && mode[i - 1] === "open";
         for (let k = i; k < rows.length && inPeak(k); k++) {
-          const wantOpen = elig[k] && rows[k].outdoor < t;
+          const freshOk = !noNewOpenOvernight(rows[k].hour) || prevOpen;
+          const wantOpen = elig[k] && rows[k].outdoor < t && freshOk;
           t = step(t, k, wantOpen ? "open" : "sealed");
-          if (t > ceiling + 0.05) return false;
+          if (t > ceilings[k] + 0.05) return false;
+          prevOpen = wantOpen;
         }
         return true;
       };
-      if (peakHoldsAt(hi)) {
-        lo = hi;
-      } else if (!peakHoldsAt(lo)) {
-        peakAvoidedFully = false;
-      } else {
+      if (peakHoldsAt(hi)) { lo = hi; }
+      else if (!peakHoldsAt(lo)) { peakAvoidedFully = false; }
+      else {
         for (let iter = 0; iter < 20; iter++) {
           const mid = (lo + hi) / 2;
           if (peakHoldsAt(mid)) lo = mid; else hi = mid;
@@ -175,37 +173,26 @@ function simulate(rows, params) {
         let t = T;
         for (let u = used.length - 1; u >= 0; u--) {
           const { k: kk, drop } = used[u];
-          mode[kk] = "ac-precool";
-          temp[kk] = t;
-          t -= drop;
-          peakPrecoolHours++;
+          mode[kk] = "ac-precool"; temp[kk] = t; t -= drop; peakPrecoolHours++;
         }
-        if (remaining <= 1e-6) {
-          T = target;
-        } else {
-          T = t;
-          peakLimitedByLeadTime = true;
-          if (!peakHoldsAt(T)) peakAvoidedFully = false;
-        }
+        if (remaining <= 1e-6) { T = target; }
+        else { T = t; peakLimitedByLeadTime = true; if (!peakHoldsAt(T)) peakAvoidedFully = false; }
+        for (const u of used) acSetpoint[u.k] = T;
       }
     }
-
     if (inPeak(i) && peakAvoidedFully) {
-      const wantOpen = elig[i] && rows[i].outdoor < T;
+      const wantOpen = elig[i] && rows[i].outdoor < T && canOpenAt(i);
       const m = wantOpen ? "open" : "sealed";
       mode[i] = m; temp[i] = T; T = step(T, i, m);
     } else {
-      const wantOpen = elig[i] && rows[i].outdoor < T;
-      if (wantOpen) {
-        mode[i] = "open"; temp[i] = T; T = step(T, i, "open");
-      } else {
+      const wantOpen = elig[i] && rows[i].outdoor < T && canOpenAt(i);
+      if (wantOpen) { mode[i] = "open"; temp[i] = T; T = step(T, i, "open"); }
+      else {
         const wouldBe = step(T, i, "sealed");
-        if (wouldBe > ceiling) {
-          mode[i] = "ac"; temp[i] = T; T = Math.min(T, ceiling);
+        if (wouldBe > ceilings[i]) {
+          mode[i] = "ac"; temp[i] = T; T = Math.max(ceilings[i], T - acRateFor(rows[i].outdoor, maxAcRate));
           if (inPeak(i)) peakForcedAcHours++;
-        } else {
-          mode[i] = "sealed"; temp[i] = T; T = wouldBe;
-        }
+        } else { mode[i] = "sealed"; temp[i] = T; T = wouldBe; }
       }
     }
     i++;
@@ -217,13 +204,11 @@ function simulate(rows, params) {
     if (active && mode[idx] === "sealed" && elig[idx] && r.outdoor >= temp[idx]) {
       reasons.push(`outside (${r.outdoor}°) not cooler than inside (${temp[idx].toFixed(0)}°)`);
     }
-    if (active && mode[idx] === "ac") reasons.push(`would exceed ${ceiling}° comfort ceiling — AC engaged`);
-    if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${temp[idx].toFixed(0)}°F now, hold through peak start (${peakStart}:00–${peakEnd}:00)`);
+    if (active && mode[idx] === "ac") reasons.push(`would exceed ${ceilings[idx]}° comfort ceiling — AC engaged`);
+    if (active && mode[idx] === "ac-precool") reasons.push(`set AC to ${(acSetpoint[idx] ?? temp[idx]).toFixed(0)}°F now, hold through peak start (${peakStart}:00–${peakEnd}:00)`);
     return {
       label: r.label, hour: r.hour, outdoor: r.outdoor, dew: r.dew, precip: r.precip,
-      eligible: active && (mode[idx] === "open"),
       reasons,
-      sealed: active ? +sealedTrace[idx].toFixed(1) : null,
       plan: active ? +temp[idx].toFixed(1) : null,
       mode: active ? mode[idx] : "pre",
     };
@@ -235,29 +220,18 @@ function simulate(rows, params) {
       if (openAt === null) openAt = k;
       closeAt = null;
       const perHr = Math.max(0, counterfactualAC(rows[k].hour, rows[k].outdoor) - openHourLoad(rows[k].hour));
-      savedKwh += perHr; savedCost += perHr * params.rate;
+      savedKwh += perHr; savedCost += perHr * (params.rate ?? 0);
     } else if (openAt !== null && closeAt === null) {
       closeAt = k;
     }
   }
 
-  const windowEndIdx = closeAt !== null ? closeAt - 1 : data.length - 1;
-  const startTempAtOpen = openAt !== null ? (data[Math.max(openAt - 1, 0)]?.plan ?? indoorStart) : indoorStart;
-  const endTempAtClose = openAt !== null ? data[windowEndIdx]?.plan ?? temp[temp.length - 1] : temp[temp.length - 1];
-  const outLowInWindow = openAt !== null
-    ? Math.min(...rows.slice(openAt, windowEndIdx + 1).map((r) => r.outdoor))
-    : Math.min(...rows.slice(startIdx).map((r) => r.outdoor));
-  const drop = openAt !== null ? startTempAtOpen - endTempAtClose : 0;
-  const capture = openAt !== null && startTempAtOpen > outLowInWindow
-    ? (100 * (startTempAtOpen - endTempAtClose)) / (startTempAtOpen - outLowInWindow) : null;
-
   const acHours = mode.filter((m) => m === "ac").length;
   const precoolHours = mode.filter((m) => m === "ac-precool").length;
 
   return {
-    data, openAt, closeAt, drop, capture, outLow: outLowInWindow,
-    finalPlan: temp[temp.length - 1], finalSealed: sealedTrace[sealedTrace.length - 1],
-    savedKwh, savedCost, acHours, precoolHours, peakAvoidedFully, peakForcedAcHours, peakLimitedByLeadTime,
+    data, openAt, closeAt, savedKwh, savedCost, acHours, precoolHours,
+    peakAvoidedFully, peakForcedAcHours, peakPrecoolHours, peakLimitedByLeadTime,
   };
 }
 
@@ -283,28 +257,23 @@ function dewPointF(tempF, rh) {
   return dewC * 9 / 5 + 32;
 }
 
-// Your Apps Script Web App already handles SwitchBot auth server-side and returns clean JSON —
-// no CORS problem (unlike calling SwitchBot directly from a browser) and no credentials needed here.
-// Averages every room's temperature found in the response (works with however many sensors exist).
-// Apps Script doesn't reliably send CORS headers, so a normal fetch() gets blocked by the
-// browser before it even reaches the script. JSONP sidesteps this entirely — script tags
-// aren't subject to CORS — by loading the URL as a <script> and having Apps Script wrap its
-// JSON response in a callback function we define here.
-function fetchAppsScriptIndoorTemp(url) {
+function fetchAppsScriptIndoorByZone(url) {
   return new Promise((resolve, reject) => {
     const callbackName = "aurynoxCb_" + Date.now();
     window[callbackName] = (json) => {
       delete window[callbackName];
       script.remove();
       try {
-        const temps = [];
-        for (const key of Object.keys(json)) {
-          const tempC = json[key]?.body?.temperature;
-          if (typeof tempC === "number") temps.push({ room: key, f: tempC * 9 / 5 + 32 });
+        const bedroomC = json.primary_bedroom?.body?.temperature;
+        const livingC = json.living_room?.body?.temperature;
+        const kitchenC = json.kitchen?.body?.temperature;
+        if (typeof bedroomC !== "number" || typeof livingC !== "number" || typeof kitchenC !== "number") {
+          reject(new Error("Expected primary_bedroom, living_room, and kitchen readings — check the Apps Script response."));
+          return;
         }
-        if (!temps.length) { reject(new Error("No temperature readings found — check the Apps Script is returning sensor data.")); return; }
-        const avg = temps.reduce((s, t) => s + t.f, 0) / temps.length;
-        resolve({ avg, temps });
+        const upstairs = bedroomC * 9 / 5 + 32;
+        const downstairs = ((livingC + kitchenC) / 2) * 9 / 5 + 32;
+        resolve({ upstairs, downstairs });
       } catch (e) { reject(e); }
     };
     const script = document.createElement("script");
@@ -320,13 +289,11 @@ async function fetchOpenWeatherText(apiKey, zip) {
   if (!geoRes.ok) throw new Error(`Couldn't look up zip code "${zip}" (status ${geoRes.status}) — check it's a valid 5-digit US zip and your key is active.`);
   const geo = await geoRes.json();
   const { lat, lon } = geo;
-
   const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=imperial&appid=${apiKey}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`OpenWeather returned ${res.status} — check your API key and that it's activated (can take ~10 min after signup).`);
   const json = await res.json();
   const list = json.list;
-
   const hourly = [];
   for (let i = 0; i < list.length - 1 && hourly.length < 30; i++) {
     const a = list[i], b = list[i + 1];
@@ -346,43 +313,110 @@ async function fetchOpenWeatherText(apiKey, zip) {
   }
   return hourly.join("\n");
 }
-// Narrative summary for Simple mode — same conversational approach that worked well in the email,
-// scanning the already-computed hourly data for which blocking factors actually applied and when.
-function buildNarrativeSummary(simData) {
-  let morningDew = false, rainIssue = false, afternoonHeat = false, eveningGood = false;
-  for (const d of simData) {
-    const reasonText = d.reasons.join(" ");
-    if (d.hour < 12 && reasonText.includes("dew")) morningDew = true;
-    if (reasonText.includes("rain risk")) rainIssue = true;
-    if (d.hour >= 12 && d.hour < 18 && (reasonText.includes("comfort ceiling") || reasonText.includes("not cooler than inside"))) afternoonHeat = true;
-    if (d.hour >= 18 && d.mode === "open") eveningGood = true;
-  }
-  const parts = [];
-  if (morningDew) parts.push("morning humidity");
-  if (rainIssue) parts.push("rain risk");
-  if (afternoonHeat) parts.push("afternoon heat");
 
-  if (!parts.length) return "Conditions look favorable for ventilation today.";
-  const verb = parts.length === 1 ? "limits" : "limit";
-  let sentence = parts.join(" and ") + " " + verb + " natural ventilation today.";
-  sentence = sentence.charAt(0).toUpperCase() + sentence.slice(1);
-  if (eveningGood) sentence += " Conditions look better again this evening.";
-  return sentence;
+// Same thematic grouping as before — categorizes by reason TYPE, not exact string match,
+// so consecutive hours merge whenever the underlying story is the same (e.g. "dew 64-67°
+// (limit 65°)" as one line instead of several near-duplicates with slightly different values).
+function categorizeReason(r) {
+  let m = r.match(/dew (-?[\d.]+)° ≥ ([\d.]+)° limit/);
+  if (m) return { type: "dew", val: +m[1], limit: +m[2] };
+  m = r.match(/rain risk ([\d.]+)%/);
+  if (m) return { type: "rain", val: +m[1] };
+  m = r.match(/outside \((-?[\d.]+)°\) not cooler than inside \((-?[\d.]+)°\)/);
+  if (m) return { type: "notCooler", out: +m[1], inside: +m[2] };
+  m = r.match(/would exceed ([\d.]+)° comfort ceiling/);
+  if (m) return { type: "ceiling", val: +m[1] };
+  m = r.match(/set AC to ([\d.]+)°F now, hold through peak start \((\d+):00–(\d+):00\)/);
+  if (m) return { type: "precool", val: +m[1], ps: m[2], pe: m[3] };
+  return { type: "other", raw: r };
 }
+
+function renderReasonCat(group) {
+  const first = group[0];
+  if (first.type === "dew") {
+    const vals = group.map((g) => g.val);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    return `dew ${lo === hi ? lo : `${lo}–${hi}`}° (limit ${first.limit}°)`;
+  }
+  if (first.type === "rain") {
+    const vals = group.map((g) => g.val);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    return `rain risk ${lo === hi ? lo : `${lo}–${hi}`}%`;
+  }
+  if (first.type === "notCooler") return `outside not yet cooler than inside`;
+  if (first.type === "ceiling") return `would exceed ${first.val}° comfort ceiling — AC engaged`;
+  if (first.type === "precool") return `set AC to ${first.val}°F now, hold through peak start (${first.ps}:00–${first.pe}:00)`;
+  return first.raw;
+}
+
+function ZonePanel({ title, sim }) {
+  if (!sim) return null;
+  return (
+    <div className="mb-6">
+      <div className="uppercase text-xs mb-2" style={{ color: PALETTE.sage, letterSpacing: "0.18em" }}>{title}</div>
+      <div className="flex w-full overflow-hidden rounded-lg mb-2" style={{ border: `1px solid ${PALETTE.line}` }}>
+        {sim.data.map((d, i) => {
+          const bg =
+            d.mode === "open" ? PALETTE.sageDeep :
+            d.mode === "ac" ? PALETTE.acBlue :
+            d.mode === "ac-precool" ? PALETTE.amber :
+            d.mode === "sealed" ? "#2C3E4A" : PALETTE.panel;
+          return (
+            <div key={i} className="flex-1 text-center py-2"
+              title={`${d.label} · out ${d.outdoor}° · ${d.mode}${d.reasons.length ? " — " + d.reasons.join("; ") : ""}`}
+              style={{ background: bg, borderLeft: i > 0 ? `1px solid ${PALETTE.bg}` : "none", minWidth: 0 }}
+            >
+              <div className="font-mono" style={{ fontSize: "0.55rem", color: d.mode === "sealed" || d.mode === "pre" ? PALETTE.dim : PALETTE.text }}>
+                {d.hour % 3 === 0 ? d.label : "·"}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {(() => {
+        const spans = [];
+        let cur = null;
+        for (const d of sim.data) {
+          if (!d.reasons.length) { cur = null; continue; }
+          const cats = d.reasons.map(categorizeReason);
+          const typeKey = cats.map((c) => c.type).sort().join(",");
+          if (cur && cur.typeKey === typeKey) {
+            cur.end = d.label;
+            cats.forEach((c, idx) => cur.cats[idx].push(c));
+          } else {
+            cur = { typeKey, start: d.label, end: d.label, cats: cats.map((c) => [c]) };
+            spans.push(cur);
+          }
+        }
+        if (!spans.length) return null;
+        return (
+          <div className="rounded-lg p-3" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
+            {spans.map((s, i) => (
+              <div key={i} className="text-xs flex gap-2 items-baseline">
+                <span className="font-mono shrink-0" style={{ color: PALETTE.amber }}>{s.start === s.end ? s.start : `${s.start}–${s.end}`}</span>
+                <span style={{ color: PALETTE.dim }}>{s.cats.map(renderReasonCat).join("; ")}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 export default function AurynoxNightPlanner() {
   const [raw, setRaw] = useState(DEFAULT_FORECAST);
-  const [indoorStart, setIndoorStart] = useState(78);
+  const [indoorDown, setIndoorDown] = useState(76);
+  const [indoorUp, setIndoorUp] = useState(76);
   const [startHour, setStartHour] = useState(8);
   const [aOpen, setAOpen] = useState(0.0677);
   const [aClosed, setAClosed] = useState(0.0105);
   const [cSolar, setCSolar] = useState(0.7071);
   const [peakHour, setPeakHour] = useState(12.5);
   const [bumpWidth, setBumpWidth] = useState(6.0);
-  const [ceiling, setCeiling] = useState(76);
   const [peakStart, setPeakStart] = useState(16);
   const [peakEnd, setPeakEnd] = useState(21);
-  
-  const maxAcRate = 1.5; // internal constant only — no longer user-editable, still applied automatically via the capacity curve
+  const maxAcRate = 1.5;
   const [dewMax, setDewMax] = useState(63);
   const [precipMax, setPrecipMax] = useState(40);
   const [rate, setRate] = useState(0.281);
@@ -407,22 +441,18 @@ export default function AurynoxNightPlanner() {
       const text = await fetchOpenWeatherText(apiKey.trim(), zip.trim());
       setRaw(text);
       setFetchStatus(`ok: fetched live forecast at ${new Date().toLocaleTimeString()}`);
-    } catch (e) {
-      setFetchStatus(`error: ${e.message}`);
-    }
+    } catch (e) { setFetchStatus(`error: ${e.message}`); }
   };
 
   const fetchSensorData = async () => {
     if (!sensorUrl.trim()) { setSensorFetchStatus("error: paste your Apps Script URL first"); return; }
     setSensorFetchStatus("loading");
     try {
-      const { avg, temps } = await fetchAppsScriptIndoorTemp(sensorUrl.trim());
-      setIndoorStart(+avg.toFixed(1));
-      const detail = temps.map((t) => `${t.room}: ${t.f.toFixed(1)}°F`).join(", ");
-      setSensorFetchStatus(`ok: avg ${avg.toFixed(1)}°F (${detail}) at ${new Date().toLocaleTimeString()}`);
-    } catch (e) {
-      setSensorFetchStatus(`error: ${e.message}`);
-    }
+      const { upstairs, downstairs } = await fetchAppsScriptIndoorByZone(sensorUrl.trim());
+      setIndoorUp(+upstairs.toFixed(1));
+      setIndoorDown(+downstairs.toFixed(1));
+      setSensorFetchStatus(`ok: downstairs ${downstairs.toFixed(1)}°F, upstairs ${upstairs.toFixed(1)}°F at ${new Date().toLocaleTimeString()}`);
+    } catch (e) { setSensorFetchStatus(`error: ${e.message}`); }
   };
 
   const rows = useMemo(() => parseForecast(raw), [raw]);
@@ -431,27 +461,19 @@ export default function AurynoxNightPlanner() {
     return i === -1 ? 0 : i;
   }, [rows, startHour]);
 
-  const sim = useMemo(
-    () => (rows.length ? simulate(rows, { indoorStart, startIdx, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, ceiling, peakStart, peakEnd, maxAcRate }) : null),
-    [rows, indoorStart, startIdx, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, ceiling, peakStart, peakEnd, maxAcRate]
-  );
+  const baseParams = { startIdx, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, peakStart, peakEnd, maxAcRate };
 
-  const openSegments = useMemo(() => {
-    if (!sim) return [];
-    const segs = [];
-    let cur = null;
-    for (const d of sim.data) {
-      if (d.mode === "open") {
-        if (!cur) cur = { start: d.label, end: d.label, endIsLastRow: false };
-        else cur.end = d.label;
-      } else if (cur) {
-        segs.push(cur);
-        cur = null;
-      }
-    }
-    if (cur) { cur.endIsLastRow = true; segs.push(cur); }
-    return segs;
-  }, [sim]);
+  const simDown = useMemo(() => {
+    if (!rows.length) return null;
+    const ceilings = rows.map((r) => ceilingForHour("downstairs", r.hour));
+    return simulateZone(rows, startIdx, { ...baseParams, indoorStart: indoorDown }, ceilings);
+  }, [rows, startIdx, indoorDown, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, peakStart, peakEnd]);
+
+  const simUp = useMemo(() => {
+    if (!rows.length) return null;
+    const ceilings = rows.map((r) => ceilingForHour("upstairs", r.hour));
+    return simulateZone(rows, startIdx, { ...baseParams, indoorStart: indoorUp }, ceilings);
+  }, [rows, startIdx, indoorUp, aOpen, aClosed, dewMax, precipMax, rate, cSolar, peakHour, bumpWidth, peakStart, peakEnd]);
 
   return (
     <div className="min-h-screen w-full" style={{ background: PALETTE.bg, color: PALETTE.text, fontFamily: "'Avenir Next', 'Segoe UI', system-ui, sans-serif" }}>
@@ -459,351 +481,88 @@ export default function AurynoxNightPlanner() {
         <div className="mb-6 flex items-baseline justify-between flex-wrap gap-2">
           <div>
             <div className="uppercase" style={{ color: PALETTE.sage, letterSpacing: "0.32em", fontSize: "0.68rem" }}>Aurynox</div>
-            <h1 className="mt-1 text-2xl md:text-3xl font-semibold" style={{ letterSpacing: "-0.01em" }}>
-              Night Planner
-            </h1>
+            <h1 className="mt-1 text-2xl md:text-3xl font-semibold" style={{ letterSpacing: "-0.01em" }}>Night Planner</h1>
           </div>
-          <div className="flex items-center gap-3">
-            {!simpleMode && (
-              <div className="text-xs hidden md:block" style={{ color: PALETTE.dim }}>
-                T(t+1) = T + a·(Out−T) + c·Solar(t)
-              </div>
-            )}
-            <button
-              onClick={() => setSimpleMode((s) => !s)}
-              className="rounded-full px-3 py-1 text-xs font-semibold"
-              style={{ background: PALETTE.panelSoft, color: PALETTE.sage, border: `1px solid ${PALETTE.line}` }}
-            >
-              {simpleMode ? "Simple view" : "Advanced view"}
-            </button>
-          </div>
+          <button onClick={() => setSimpleMode((s) => !s)}
+            className="rounded-full px-3 py-1 text-xs font-semibold"
+            style={{ background: PALETTE.panelSoft, color: PALETTE.sage, border: `1px solid ${PALETTE.line}` }}>
+            {simpleMode ? "Simple view" : "Advanced view"}
+          </button>
         </div>
 
-        {sim && (
-          <div
-            className="mb-6 rounded-xl p-4"
-            style={{
-              background: openSegments.length > 0 ? `linear-gradient(135deg, ${PALETTE.panel}, #16341F30)` : PALETTE.panel,
-              border: `1px solid ${openSegments.length > 0 ? PALETTE.sageDeep : PALETTE.line}`,
-            }}
-          >
-            {openSegments.length > 0 ? (
-              <>
-                <div className="uppercase text-xs mb-1" style={{ color: PALETTE.sage, letterSpacing: "0.18em" }}>Tonight</div>
-                <div className="text-lg md:text-xl font-semibold">
-                  {openSegments.map((seg, i) => (
-                    <span key={i}>
-                      {i > 0 && ", "}
-                      {seg.start === seg.end || seg.endIsLastRow ? `Open ${seg.start}` : `Open ${seg.start}–${seg.end}`}
-                    </span>
-                  ))}
-                </div>
-                {openSegments.some((s) => s.endIsLastRow) && (
-                  <div className="text-xs mt-1" style={{ color: PALETTE.warn }}>
-                    ⚠ Still open at forecast end — extend the forecast or check by hand.
-                  </div>
-                )}
-                <div className="flex gap-5 text-sm font-mono flex-wrap mt-3">
-                  <div><div style={{ color: PALETTE.dim, fontSize: "0.7rem" }}>drop</div><div style={{ color: PALETTE.sage }}>{sim.drop.toFixed(1)}°F</div></div>
-                  <div><div style={{ color: PALETTE.dim, fontSize: "0.7rem" }}>end</div><div>{sim.finalPlan.toFixed(1)}°F</div></div>
-                  {sim.capture !== null && (
-                    <div><div style={{ color: PALETTE.dim, fontSize: "0.7rem" }}>capture</div><div>{sim.capture.toFixed(0)}%</div></div>
-                  )}
-                  <div title="vs. running AC at these hours/temps, benchmarked to June 2026 measured behavior. Ballpark.">
-                    <div style={{ color: PALETTE.dim, fontSize: "0.7rem" }}>saved vs AC</div>
-                    <div style={{ color: PALETTE.sage }}>~{sim.savedKwh.toFixed(1)}kWh · ${sim.savedCost.toFixed(2)}</div>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="uppercase text-xs mb-1" style={{ color: PALETTE.warn, letterSpacing: "0.18em" }}>Tonight</div>
-                <div className="text-lg font-semibold">Keep windows closed.</div>
-                <div className="text-xs mt-1" style={{ color: PALETTE.dim }}>
-                  No hour clears the dew/rain limits with outdoor cooler than indoor.
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {sim && (
-          <div
-            className="mb-6 rounded-xl p-4 flex items-center justify-between flex-wrap gap-2"
-            style={{
-              background: PALETTE.panel,
-              border: `1px solid ${sim.peakAvoidedFully ? PALETTE.sageDeep : PALETTE.warn}`,
-            }}
-          >
-            <div>
-              <div className="uppercase text-xs mb-1" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-                Peak {peakStart}:00–{peakEnd}:00
-              </div>
-              {sim.peakAvoidedFully && !sim.peakLimitedByLeadTime ? (
-                <div className="text-sm" style={{ color: PALETTE.sage }}>
-                  No AC needed during peak.
-                  {sim.precoolHours > 0 ? ` Pre-cooling ${sim.precoolHours}hr before covers it.` : " Stays under ceiling on its own."}
-                </div>
-              ) : sim.peakLimitedByLeadTime && sim.peakAvoidedFully ? (
-                <div className="text-sm" style={{ color: PALETTE.amber }}>
-                  Tight — used all {sim.precoolHours}hr of available lead time, just made it. Extending the forecast further back would help.
-                </div>
-              ) : sim.peakLimitedByLeadTime ? (
-                <div className="text-sm" style={{ color: PALETTE.warn }}>
-                  Not enough lead time to precool fully — peak entry will run warm.
-                </div>
-              ) : (
-                <div className="text-sm" style={{ color: PALETTE.warn }}>
-                  Couldn't avoid AC during peak — {sim.peakForcedAcHours}hr needed. Genuinely hot/long event.
-                </div>
-              )}
-            </div>
-            <div className="text-xs font-mono" style={{ color: PALETTE.dim }}>
-              AC hrs: <span style={{ color: PALETTE.text }}>{sim.acHours}</span> · precool: <span style={{ color: PALETTE.text }}>{sim.precoolHours}</span>
-            </div>
-          </div>
-        )}
-
-        {sim && (
-          <div className="mb-6">
-            <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-              24-hour plan · ventilate / coast / AC
-            </div>
-            <div className="flex w-full overflow-hidden rounded-lg" style={{ border: `1px solid ${PALETTE.line}` }}>
-              {sim.data.map((d, i) => {
-                const bg =
-                  d.mode === "open" ? PALETTE.sageDeep :
-                  d.mode === "ac" ? PALETTE.warn :
-                  d.mode === "ac-precool" ? PALETTE.amber :
-                  d.mode === "sealed" ? "#2C3E4A" :
-                  PALETTE.panel;
-                const modeLabel =
-                  d.mode === "open" ? "OPEN (ventilate)" :
-                  d.mode === "ac" ? "AC (comfort)" :
-                  d.mode === "ac-precool" ? "AC (pre-cool for peak)" :
-                  d.mode === "sealed" ? "COAST (sealed, no action)" : "";
-                return (
-                  <div key={i} className="flex-1 text-center py-2"
-                    title={`${d.label} · out ${d.outdoor}° · dew ${d.dew}° · precip ${d.precip}%${d.reasons.length ? " — " + d.reasons.join("; ") : modeLabel ? " — " + modeLabel : ""}`}
-                    style={{ background: bg, borderLeft: i > 0 ? `1px solid ${PALETTE.bg}` : "none", minWidth: 0 }}
-                  >
-                    <div className="font-mono" style={{ fontSize: "0.55rem", color: d.mode === "sealed" || d.mode === "pre" ? PALETTE.dim : PALETTE.text }}>
-                      {d.hour % 3 === 0 ? d.label : "·"}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="flex gap-4 mt-2 text-xs flex-wrap" style={{ color: PALETTE.dim }}>
-              <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.sageDeep }} />ventilate</span>
-              <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: "#2C3E4A" }} />coast</span>
-              <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.amber }} />AC (pre-cool)</span>
-              <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.warn }} />AC (comfort)</span>
-            </div>
-          {simpleMode && (
-              <div className="mt-3 rounded-lg p-3" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
-                <div className="text-sm" style={{ color: PALETTE.text }}>{buildNarrativeSummary(sim.data)}</div>
-              </div>
-            )}
-            {!simpleMode && (() => {
-              // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific
-              // showing "dew 64-67° (limit 65°)" as one line instead of several near-duplicates.
-              const categorize = (r) => {
-                let m = r.match(/dew (-?[\d.]+)° ≥ ([\d.]+)° limit/);
-                if (m) return { type: "dew", val: +m[1], limit: +m[2] };
-                m = r.match(/rain risk ([\d.]+)%/);
-                if (m) return { type: "rain", val: +m[1] };
-                m = r.match(/outside \((-?[\d.]+)°\) not cooler than inside \((-?[\d.]+)°\)/);
-                if (m) return { type: "notCooler", out: +m[1], inside: +m[2] };
-                m = r.match(/would exceed ([\d.]+)° comfort ceiling/);
-                if (m) return { type: "ceiling", val: +m[1] };
-                m = r.match(/set AC to ([\d.]+)°F now, hold through peak start \((\d+):00–(\d+):00\)/);
-                if (m) return { type: "precool", val: +m[1], ps: m[2], pe: m[3] };
-                return { type: "other", raw: r };
-              };
-
-              const spans = [];
-              let cur = null;
-              for (const d of sim.data) {
-                if (!d.reasons.length) { cur = null; continue; }
-                const cats = d.reasons.map(categorize);
-                const typeKey = cats.map((c) => c.type).sort().join(",");
-                if (cur && cur.typeKey === typeKey) {
-                  cur.end = d.label;
-                  cats.forEach((c, idx) => cur.cats[idx].push(c));
-                } else {
-                  cur = { typeKey, start: d.label, end: d.label, cats: cats.map((c) => [c]) };
-                  spans.push(cur);
-                }
-              }
-              if (!spans.length) return null;
-
-              const renderCat = (group) => {
-                const first = group[0];
-                if (first.type === "dew") {
-                  const vals = group.map((g) => g.val);
-                  const lo = Math.min(...vals), hi = Math.max(...vals);
-                  return `dew ${lo === hi ? lo : `${lo}–${hi}`}° (limit ${first.limit}°)`;
-                }
-                if (first.type === "rain") {
-                  const vals = group.map((g) => g.val);
-                  const lo = Math.min(...vals), hi = Math.max(...vals);
-                  return `rain risk ${lo === hi ? lo : `${lo}–${hi}`}%`;
-                }
-                if (first.type === "notCooler") return `outside not yet cooler than inside`;
-                if (first.type === "ceiling") return `would exceed ${first.val}° comfort ceiling — AC engaged`;
-                if (first.type === "precool") return `set AC to ${first.val}°F now, hold through peak start (${first.ps}:00–${first.pe}:00)`;
-                return first.raw;
-              };
-
-              return (
-                <div className="mt-3 rounded-lg p-3" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
-                  <div className="uppercase text-xs mb-2" style={{ color: PALETTE.warn, letterSpacing: "0.18em" }}>Why not ventilating</div>
-                  <div className="flex flex-col gap-1">
-                    {spans.map((s, i) => (
-                      <div key={i} className="text-sm flex gap-3 items-baseline">
-                        <span className="font-mono shrink-0" style={{ color: PALETTE.amber, fontSize: "0.78rem" }}>
-                          {s.start === s.end ? s.start : `${s.start}–${s.end}`}
-                        </span>
-                        <span style={{ color: PALETTE.text }}>{s.cats.map(renderCat).join("; ")}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-          
-          </div>
-        )}
-
-        {sim && !simpleMode && (
-          <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
-            <ResponsiveContainer width="100%" height={280}>
-              <ComposedChart data={sim.data} margin={{ top: 8, right: 12, bottom: 0, left: -18 }}>
-                <CartesianGrid stroke={PALETTE.line} strokeDasharray="2 6" />
-                <XAxis dataKey="label" tick={{ fill: PALETTE.dim, fontSize: 11 }} interval={2} />
-                <YAxis domain={["dataMin - 2", "dataMax + 2"]} tick={{ fill: PALETTE.dim, fontSize: 11 }} unit="°" />
-                <Tooltip
-                  contentStyle={{ background: PALETTE.panelSoft, border: `1px solid ${PALETTE.line}`, borderRadius: 8, color: PALETTE.text }}
-                  labelStyle={{ color: PALETTE.sage }}
-                />
-                <Legend wrapperStyle={{ color: PALETTE.dim, fontSize: 12 }} />
-                {sim.openAt !== null && (
-                  <ReferenceArea
-                    x1={sim.data[sim.openAt].label}
-                    x2={sim.data[sim.closeAt !== null ? sim.closeAt : sim.data.length - 1].label}
-                    fill={PALETTE.sageDeep} fillOpacity={0.12}
-                  />
-                )}
-                <Line type="monotone" dataKey="outdoor" name="Outdoor" stroke={PALETTE.dim} strokeWidth={1.5} dot={false} strokeDasharray="4 3" />
-                <Line type="monotone" dataKey="sealed" name="Sealed all day" stroke={PALETTE.amber} strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="plan" name="Aurynox plan" stroke={PALETTE.sage} strokeWidth={2.5} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+        <ZonePanel title="Downstairs" sim={simDown} />
+        <ZonePanel title="Upstairs" sim={simUp} />
 
         <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
-          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-            Fetch live forecast
-          </div>
+          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>Fetch live forecast</div>
           <div className="flex flex-wrap gap-3 items-end">
             <label className="flex flex-col gap-1 text-xs flex-1 min-w-[220px]" style={{ color: PALETTE.dim }}>
-              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>OpenWeather API key (remembered on this device)</span>
-              <input
-                type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>OpenWeather API key</span>
+              <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
                 placeholder="paste your OpenWeather API key"
                 className="rounded px-2 py-1.5 font-mono text-sm outline-none"
-                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}` }}
-              />
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}` }} />
             </label>
             <label className="flex flex-col gap-1 text-xs" style={{ color: PALETTE.dim }}>
               <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Zip</span>
-              <input
-                type="text" value={zip} onChange={(e) => setZip(e.target.value)}
+              <input type="text" value={zip} onChange={(e) => setZip(e.target.value)}
                 className="rounded px-2 py-1.5 font-mono text-sm outline-none"
-                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "6rem" }}
-              />
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, width: "6rem" }} />
             </label>
-            <button
-              onClick={handleFetchLive}
-              className="rounded px-4 py-2 text-sm font-semibold"
-              style={{ background: PALETTE.sageDeep, color: PALETTE.text }}
-            >
+            <button onClick={handleFetchLive} className="rounded px-4 py-2 text-sm font-semibold"
+              style={{ background: PALETTE.sageDeep, color: PALETTE.text }}>
               {fetchStatus === "loading" ? "Fetching…" : "Fetch forecast"}
             </button>
           </div>
           {fetchStatus && fetchStatus !== "loading" && (
-            <div className="text-xs mt-2" style={{ color: fetchStatus.startsWith("error") ? PALETTE.warn : PALETTE.sage }}>
-              {fetchStatus}
-            </div>
-          )}
-          {!simpleMode && (
-            <div className="text-xs mt-2 leading-relaxed" style={{ color: PALETTE.dim }}>
-              Free 5-day/3-hour endpoint, interpolated to hourly. <strong>Security note:</strong> this repo is public — anyone with the link could see a hardcoded key. As built, keys stay in each person's own browser only.
-            </div>
+            <div className="text-xs mt-2" style={{ color: fetchStatus.startsWith("error") ? PALETTE.warn : PALETTE.sage }}>{fetchStatus}</div>
           )}
         </div>
 
         <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
-          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-            Indoor sensor (Apps Script)
-          </div>
+          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>Indoor sensors (Apps Script)</div>
           <div className="flex flex-wrap gap-3 items-end">
             <label className="flex flex-col gap-1 text-xs flex-1 min-w-[280px]" style={{ color: PALETTE.dim }}>
-              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Apps Script URL (remembered on this device)</span>
-              <input
-                type="text" value={sensorUrl} onChange={(e) => setSensorUrl(e.target.value)}
+              <span className="uppercase tracking-widest" style={{ fontSize: "0.62rem" }}>Apps Script URL</span>
+              <input type="text" value={sensorUrl} onChange={(e) => setSensorUrl(e.target.value)}
                 placeholder="https://script.google.com/macros/s/.../exec"
                 className="rounded px-2 py-1.5 font-mono text-sm outline-none"
-                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}` }}
-              />
+                style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}` }} />
             </label>
-            <button
-              onClick={fetchSensorData}
-              className="rounded px-4 py-2 text-sm font-semibold"
-              style={{ background: PALETTE.sageDeep, color: PALETTE.text }}
-            >
-              {sensorFetchStatus === "loading" ? "Reading…" : "Read indoor temp"}
+            <button onClick={fetchSensorData} className="rounded px-4 py-2 text-sm font-semibold"
+              style={{ background: PALETTE.sageDeep, color: PALETTE.text }}>
+              {sensorFetchStatus === "loading" ? "Reading…" : "Read indoor temps"}
             </button>
           </div>
           {sensorFetchStatus && sensorFetchStatus !== "loading" && (
-            <div className="text-xs mt-2" style={{ color: sensorFetchStatus.startsWith("error") ? PALETTE.warn : PALETTE.sage }}>
-              {sensorFetchStatus}
-            </div>
+            <div className="text-xs mt-2" style={{ color: sensorFetchStatus.startsWith("error") ? PALETTE.warn : PALETTE.sage }}>{sensorFetchStatus}</div>
           )}
           {!simpleMode && (
             <div className="text-xs mt-2 leading-relaxed" style={{ color: PALETTE.dim }}>
-              Averages every room your Apps Script returns and fills "Indoor now °F" below — matches how the model itself was calibrated, on a whole-house average, not any single room. No credentials needed here; your Apps Script already handles that server-side.
+              Reads bedroom (upstairs) and living room + kitchen average (downstairs) separately — matches how the model treats them as genuinely different zones.
             </div>
           )}
         </div>
 
-        <div className="mb-6">
-          <div className="uppercase text-xs mb-2" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
-            Or paste an hourly forecast manually
-          </div>
-          <textarea
-            value={raw}
-            onChange={(e) => setRaw(e.target.value)}
-            spellCheck={false}
+        <details open={!simpleMode} className="mb-6">
+          <summary className="uppercase text-xs mb-2 cursor-pointer" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
+            {simpleMode ? "Trouble fetching? Paste a forecast manually ▸" : "Or paste an hourly forecast manually"}
+          </summary>
+          <textarea value={raw} onChange={(e) => setRaw(e.target.value)} spellCheck={false}
             className="w-full rounded-lg p-3 font-mono outline-none"
-            style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, fontSize: "0.68rem", minHeight: "10rem", lineHeight: 1.5 }}
-          />
-          <div className="text-xs mt-1" style={{ color: PALETTE.dim }}>
-            Parsed {rows.length} hours.
-          </div>
-        </div>
+            style={{ background: PALETTE.panelSoft, color: PALETTE.text, border: `1px solid ${PALETTE.line}`, fontSize: "0.68rem", minHeight: "10rem", lineHeight: 1.5 }} />
+          <div className="text-xs mt-1" style={{ color: PALETTE.dim }}>Parsed {rows.length} hours.</div>
+        </details>
 
         <div className="mb-6 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
           <div className="uppercase text-xs mb-3" style={{ color: PALETTE.dim, letterSpacing: "0.18em" }}>
             {simpleMode ? "Settings" : "Model inputs"}
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Num label="Indoor now °F" value={indoorStart} onChange={setIndoorStart} step={0.5} />
+            <Num label="Downstairs now °F" value={indoorDown} onChange={setIndoorDown} step={0.5} />
+            <Num label="Upstairs now °F" value={indoorUp} onChange={setIndoorUp} step={0.5} />
             <Num label="Dew max °F" value={dewMax} onChange={setDewMax} />
             <Num label="Rate $/kWh" value={rate} onChange={setRate} step={0.001} />
-            <Num label="Comfort ceiling °F" value={ceiling} onChange={setCeiling} step={1} />
             {!simpleMode && (
               <>
                 <Num label="Start hour" value={startHour} onChange={setStartHour} />
@@ -815,13 +574,12 @@ export default function AurynoxNightPlanner() {
                 <Num label="Solar width hr" value={bumpWidth} onChange={setBumpWidth} step={0.5} />
                 <Num label="Peak start hr" value={peakStart} onChange={setPeakStart} />
                 <Num label="Peak end hr" value={peakEnd} onChange={setPeakEnd} />
-        
               </>
             )}
           </div>
           {!simpleMode && (
             <div className="text-xs leading-relaxed mt-2" style={{ color: PALETTE.dim }}>
-              AC engages only when coasting would exceed the comfort ceiling. Pre-cool rate scales with outdoor temperature — the number above is the baseline at 75-80°F; hotter hours automatically get a reduced, more realistic rate.
+              Downstairs: 78°F overnight (9pm-6am), 76°F daytime. Upstairs: 80°F daytime (8am-8pm), 76°F overnight — with a 2°F thermostat offset overnight to reliably hit that target.
             </div>
           )}
         </div>
