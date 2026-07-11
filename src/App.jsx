@@ -1,4 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
+import {
+  ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, ReferenceArea, ResponsiveContainer, CartesianGrid,
+} from "recharts";
 
 const PALETTE = {
   bg: "#0B1B2B",
@@ -121,6 +124,16 @@ function simulateZone(rows, startIdx, params, ceilings) {
     }
     return T + aClosed * (r.outdoor - T) + cSolar * S[i];
   };
+
+  // "What if sealed all day, no action at all" — the comparison line the Advanced chart shows
+  // alongside the actual plan, so you can see how much the plan is actually helping.
+  let sealedT = indoorStart;
+  const sealedTrace = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (i >= startIdx) sealedT = sealedT + aClosed * (rows[i].outdoor - sealedT) + cSolar * S[i];
+    sealedTrace.push(sealedT);
+  }
+
   const inPeak = (i) => rows[i].hour >= peakStart && rows[i].hour < peakEnd;
   const mode = new Array(rows.length).fill("pre");
   const temp = new Array(rows.length).fill(indoorStart);
@@ -209,6 +222,7 @@ function simulateZone(rows, startIdx, params, ceilings) {
     return {
       label: r.label, hour: r.hour, outdoor: r.outdoor, dew: r.dew, precip: r.precip,
       reasons,
+      sealed: active ? +sealedTrace[idx].toFixed(1) : null,
       plan: active ? +temp[idx].toFixed(1) : null,
       mode: active ? mode[idx] : "pre",
     };
@@ -427,6 +441,25 @@ function ZonePanel({ title, sim, simpleMode }) {
           </div>
         );
       })()}
+      {!simpleMode && (
+        <div className="mt-3 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
+          <ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={sim.data} margin={{ top: 8, right: 12, bottom: 0, left: -18 }}>
+              <CartesianGrid stroke={PALETTE.line} strokeDasharray="2 6" />
+              <XAxis dataKey="label" tick={{ fill: PALETTE.dim, fontSize: 11 }} interval={2} />
+              <YAxis domain={["dataMin - 2", "dataMax + 2"]} tick={{ fill: PALETTE.dim, fontSize: 11 }} unit="°" />
+              <Tooltip
+                contentStyle={{ background: PALETTE.panelSoft, border: `1px solid ${PALETTE.line}`, borderRadius: 8, color: PALETTE.text }}
+                labelStyle={{ color: PALETTE.sage }}
+              />
+              <Legend wrapperStyle={{ color: PALETTE.dim, fontSize: 12 }} />
+              <Line type="monotone" dataKey="outdoor" name="Outdoor" stroke={PALETTE.dim} strokeWidth={1.5} dot={false} strokeDasharray="4 3" />
+              <Line type="monotone" dataKey="sealed" name="Sealed all day" stroke={PALETTE.amber} strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="plan" name="Aurynox plan" stroke={PALETTE.sage} strokeWidth={2.5} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }
