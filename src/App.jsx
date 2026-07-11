@@ -346,7 +346,29 @@ async function fetchOpenWeatherText(apiKey, zip) {
   }
   return hourly.join("\n");
 }
+// Narrative summary for Simple mode — same conversational approach that worked well in the email,
+// scanning the already-computed hourly data for which blocking factors actually applied and when.
+function buildNarrativeSummary(simData) {
+  let morningDew = false, rainIssue = false, afternoonHeat = false, eveningGood = false;
+  for (const d of simData) {
+    const reasonText = d.reasons.join(" ");
+    if (d.hour < 12 && reasonText.includes("dew")) morningDew = true;
+    if (reasonText.includes("rain risk")) rainIssue = true;
+    if (d.hour >= 12 && d.hour < 18 && (reasonText.includes("comfort ceiling") || reasonText.includes("not cooler than inside"))) afternoonHeat = true;
+    if (d.hour >= 18 && d.mode === "open") eveningGood = true;
+  }
+  const parts = [];
+  if (morningDew) parts.push("morning humidity");
+  if (rainIssue) parts.push("rain risk");
+  if (afternoonHeat) parts.push("afternoon heat");
 
+  if (!parts.length) return "Conditions look favorable for ventilation today.";
+  const verb = parts.length === 1 ? "limits" : "limit";
+  let sentence = parts.join(" and ") + " " + verb + " natural ventilation today.";
+  sentence = sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  if (eveningGood) sentence += " Conditions look better again this evening.";
+  return sentence;
+}
 export default function AurynoxNightPlanner() {
   const [raw, setRaw] = useState(DEFAULT_FORECAST);
   const [indoorStart, setIndoorStart] = useState(78);
@@ -579,7 +601,14 @@ export default function AurynoxNightPlanner() {
               <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.warn }} />AC (comfort)</span>
             </div>
           {(() => {
-              // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific
+            {simpleMode && (
+              <div className="mt-3 rounded-lg p-3" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
+                <div className="text-sm" style={{ color: PALETTE.text }}>{buildNarrativeSummary(sim.data)}</div>
+              </div>
+            )}
+            {!simpleMode && (() => {
+              // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific  
+            // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific
               // number, so consecutive hours merge whenever the underlying story is the same —
               // showing "dew 64-67° (limit 65°)" as one line instead of several near-duplicates.
               const categorize = (r) => {
