@@ -360,7 +360,7 @@ export default function AurynoxNightPlanner() {
   const [peakStart, setPeakStart] = useState(16);
   const [peakEnd, setPeakEnd] = useState(21);
   
-  const [maxAcRate, setMaxAcRate] = useState(1.5);
+  const maxAcRate = 1.5; // internal constant only — no longer user-editable, still applied automatically via the capacity curve
   const [dewMax, setDewMax] = useState(63);
   const [precipMax, setPrecipMax] = useState(40);
   const [rate, setRate] = useState(0.281);
@@ -790,7 +790,6 @@ export default function AurynoxNightPlanner() {
                 <Num label="Peak start hr" value={peakStart} onChange={setPeakStart} />
                 <Num label="Peak end hr" value={peakEnd} onChange={setPeakEnd} />
         
-                <Num label="AC rate @75-80°F" value={maxAcRate} onChange={setMaxAcRate} step={0.1} />
               </>
             )}
           </div>
