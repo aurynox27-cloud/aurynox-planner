@@ -600,16 +600,13 @@ export default function AurynoxNightPlanner() {
               <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.amber }} />AC (pre-cool)</span>
               <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1" style={{ background: PALETTE.warn }} />AC (comfort)</span>
             </div>
-          {(() => {
-            {simpleMode && (
+          {simpleMode && (
               <div className="mt-3 rounded-lg p-3" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}` }}>
                 <div className="text-sm" style={{ color: PALETTE.text }}>{buildNarrativeSummary(sim.data)}</div>
               </div>
             )}
             {!simpleMode && (() => {
-              // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific  
-            // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific
-              // number, so consecutive hours merge whenever the underlying story is the same —
+              // Categorize each reason by TYPE (dew/rain/ceiling/etc), separate from its specific
               // showing "dew 64-67° (limit 65°)" as one line instead of several near-duplicates.
               const categorize = (r) => {
                 let m = r.match(/dew (-?[\d.]+)° ≥ ([\d.]+)° limit/);
