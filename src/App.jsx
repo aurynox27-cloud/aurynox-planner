@@ -364,25 +364,68 @@ function renderReasonCat(group) {
 }
 
 // Narrative summary for Simple mode — one plain sentence instead of the itemized breakdown.
+// Splits data into real periods (Tonight / Tomorrow / Tomorrow night, etc.) by detecting
+// actual night-to-day transitions, instead of assuming every hour belongs to today —
+// an overnight stretch (6pm-6am) stays as ONE continuous "Tonight" even crossing midnight.
 function buildNarrativeSummary(simData) {
-  let morningDew = false, rainIssue = false, afternoonHeat = false, eveningGood = false;
+  if (!simData.length) return "Conditions look favorable for ventilation today.";
+
+  const isNightHour = (h) => h >= 18 || h < 6;
+
+  const periods = [];
+  let dayIndex = 0;
+  let prevIsNight = isNightHour(simData[0].hour);
+  let curKey = dayIndex + "-" + (prevIsNight ? "night" : "day");
+  let curRows = [];
+
+  const periodLabel = (dIdx, isNight) => {
+    if (dIdx === 0) return isNight ? "Tonight" : "Today";
+    if (dIdx === 1) return isNight ? "Tomorrow night" : "Tomorrow";
+    return isNight ? `In ${dIdx} nights` : `In ${dIdx} days`;
+  };
+
   for (const d of simData) {
-    const reasonText = d.reasons.join(" ");
-    if (d.hour < 12 && reasonText.includes("dew")) morningDew = true;
-    if (reasonText.includes("rain risk")) rainIssue = true;
-    if (d.hour >= 12 && d.hour < 18 && (reasonText.includes("comfort ceiling") || reasonText.includes("not cooler than inside"))) afternoonHeat = true;
-    if (d.hour >= 18 && d.mode === "open") eveningGood = true;
+    const nowIsNight = isNightHour(d.hour);
+    if (prevIsNight && !nowIsNight) dayIndex++;
+    const key = dayIndex + "-" + (nowIsNight ? "night" : "day");
+    if (key !== curKey) {
+      if (curRows.length) periods.push({ key: curKey, rows: curRows });
+      curKey = key;
+      curRows = [];
+    }
+    curRows.push(d);
+    prevIsNight = nowIsNight;
   }
-  const parts = [];
-  if (morningDew) parts.push("morning humidity");
-  if (rainIssue) parts.push("rain risk");
-  if (afternoonHeat) parts.push("afternoon heat");
-  if (!parts.length) return "Conditions look favorable for ventilation today.";
-  const verb = parts.length === 1 ? "limits" : "limit";
-  let sentence = parts.join(" and ") + " " + verb + " natural ventilation today.";
-  sentence = sentence.charAt(0).toUpperCase() + sentence.slice(1);
-  if (eveningGood) sentence += " Conditions look better again this evening.";
-  return sentence;
+  if (curRows.length) periods.push({ key: curKey, rows: curRows });
+
+  const sentences = [];
+  for (const period of periods) {
+    const [dIdxStr, tod] = period.key.split("-");
+    const label = periodLabel(+dIdxStr, tod === "night");
+    const rows = period.rows;
+
+    let dewIssue = false, rainIssue = false, heatIssue = false, anyOpen = false;
+    for (const d of rows) {
+      const reasonText = d.reasons.join(" ");
+      if (reasonText.includes("dew")) dewIssue = true;
+      if (reasonText.includes("rain risk")) rainIssue = true;
+      if (reasonText.includes("comfort ceiling") || reasonText.includes("not cooler than inside")) heatIssue = true;
+      if (d.mode === "open") anyOpen = true;
+    }
+
+    const parts = [];
+    if (dewIssue) parts.push("humidity");
+    if (rainIssue) parts.push("rain risk");
+    if (heatIssue) parts.push("heat");
+
+    let sentence;
+    if (anyOpen && !parts.length) sentence = label + ": good ventilation window.";
+    else if (anyOpen && parts.length) sentence = label + ": a brief ventilation window despite " + parts.join(" and ") + ".";
+    else if (parts.length) sentence = label + ": " + parts.join(" and ") + " limits ventilation, AC likely needed.";
+    else sentence = label + ": coasting, no action needed.";
+    sentences.push(sentence);
+  }
+  return sentences.join(" ");
 }
 
 function ZonePanel({ title, sim, simpleMode }) {
